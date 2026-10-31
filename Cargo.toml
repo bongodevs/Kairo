@@ -20,7 +20,7 @@ tracing-appender = "0.2"
 
 [dependencies.lyrics]
 git = "https://github.com/bongodevs/lyrics"
-tag = "v0.2.10"
+tag = "v0.2.11"
 
 [dependencies.player]
 git = "https://github.com/bongodevs/player"
