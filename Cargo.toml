@@ -1,6 +1,6 @@
 [package]
 name = "kairo"
-version = "4.8.5"
+version = "4.8.6"
 edition = "2021"
 license = "MIT"
 description = "Standalone Discord audio sending node, written in Rust. Drop-in Lavalink v4 compatible."
