@@ -337,7 +337,8 @@ providers = [
 [lyrics]
 enabled = false
 lrclib = false # synced + plain, no auth
-musixmatch = false # synced + plain, anonymous token
+lrcred = false # word-by-word (Apple TTML), one exact doc per ISRC
+musixmatch = false # word timings via the signed mobile API, or line-level
 genius = false # plain only
 deezer = false # synced word-by-word, anonymous JWT
 netease = false # synced + plain
