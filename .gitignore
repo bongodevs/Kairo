@@ -4,3 +4,14 @@ logs/
 graphify-out/
 CLAUDE.md
 .cargo/*
+.qoder/
+.freebuff/
+reference/
+extracted/
+recipe.json
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
