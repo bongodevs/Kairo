@@ -5,8 +5,10 @@ use std::future::Future;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::MissedTickBehavior;
+
+use crate::utils::locked;
 
 /// The process-wide task registry.
 pub static TASKS: LazyLock<Tasks> = LazyLock::new(Tasks::default);
@@ -25,22 +27,27 @@ pub struct Tasks {
 impl Tasks {
     /// Run `handler` every `period` (a slow run pushes the next tick out), replacing any task
     /// registered under `key`.
-    pub fn add<F, Fut>(&self, key: impl Into<String>, period: Duration, handler: F)
+    pub fn add<F, Fut>(&self, key: impl Into<String>, period: Duration, handler: F) -> AbortHandle
     where
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.spawn(key.into(), period, MissedTickBehavior::Delay, handler);
+        self.spawn(key.into(), period, MissedTickBehavior::Delay, handler)
     }
 
     /// Run `handler` on a fixed-rate grid: missed ticks fire immediately instead of pushing the
     /// schedule out.
-    pub fn add_fixed_rate<F, Fut>(&self, key: impl Into<String>, period: Duration, handler: F)
+    pub fn add_fixed_rate<F, Fut>(
+        &self,
+        key: impl Into<String>,
+        period: Duration,
+        handler: F,
+    ) -> AbortHandle
     where
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.spawn(key.into(), period, MissedTickBehavior::Burst, handler);
+        self.spawn(key.into(), period, MissedTickBehavior::Burst, handler)
     }
 
     fn spawn<F, Fut>(
@@ -49,7 +56,8 @@ impl Tasks {
         period: Duration,
         behavior: MissedTickBehavior,
         mut handler: F,
-    ) where
+    ) -> AbortHandle
+    where
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
@@ -61,15 +69,17 @@ impl Tasks {
                 handler().await;
             }
         });
+        let handle = runner.abort_handle();
         tracing::debug!(task = %key, secs = period.as_secs(), "started interval");
-        if let Some(previous) = self.runners.lock().unwrap().insert(key, runner) {
+        if let Some(previous) = locked(&self.runners).insert(key, runner) {
             previous.abort();
         }
+        handle
     }
 
     /// Cancel the task registered under `key`, if any.
     pub fn remove(&self, key: &str) {
-        if let Some(runner) = self.runners.lock().unwrap().remove(key) {
+        if let Some(runner) = locked(&self.runners).remove(key) {
             runner.abort();
             tracing::debug!(task = %key, "stopped interval");
         }
