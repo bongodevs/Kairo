@@ -2,6 +2,7 @@
 name = "kairo"
 version = "4.8.6"
 edition = "2021"
+rust-version = "1.85"
 license = "MIT"
 description = "Standalone Discord audio sending node, written in Rust. Drop-in Lavalink v4 compatible."
 
@@ -17,6 +18,7 @@ toml = "0.8"
 tower-service = "0.3"
 tracing = "0.1"
 tracing-appender = "0.2"
+http-body-util = "0.1"
 
 [dependencies.lyrics]
 git = "https://github.com/bongodevs/lyrics"
@@ -24,15 +26,15 @@ tag = "v0.2.11"
 
 [dependencies.player]
 git = "https://github.com/bongodevs/player"
-tag = "v0.1.13"
+rev = "4e9610eacab07e7981416237d456751defcd1538"
 
 [dependencies.sources]
 git = "https://github.com/bongodevs/sources"
-tag = "v0.1.32"
+rev = "8ef39d5d05f6ab42c4c7afdaaaa9e882cfd1ad0a"
 
 [dependencies.voice]
 git = "https://github.com/bongodevs/voice"
-tag = "v0.1.11"
+rev = "5210ca70c28388bec04900c39e5a21e4b83b39ea"
 
 [dependencies.reqwest]
 version = "0.12"
@@ -84,8 +86,12 @@ features = ["env-filter", "json", "chrono"]
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["test-util"] }
+tower = { version = "0.5", features = ["util"] }
 
 [profile.release]
+opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+panic = "unwind"
+overflow-checks = false
