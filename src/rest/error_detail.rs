@@ -13,7 +13,7 @@
 
 /// Structured reading of one failure cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CauseClass {
+pub(crate) enum CauseClass {
     /// `timeout=true`: deadline exceeded (connect or total).
     Timeout,
     /// `connect=true`: TCP/TLS establishment failed (refused, reset, unreachable).
@@ -41,7 +41,7 @@ impl CauseClass {
 }
 
 /// Parse the structured tokens in `err.cause`. Never inspects `message`.
-pub fn classify_detailed(err: &player::FriendlyException) -> CauseClass {
+pub(crate) fn classify_detailed(err: &player::FriendlyException) -> CauseClass {
     let cause = err.cause.as_deref().unwrap_or("");
     if token_is(cause, "timeout", "true") {
         return CauseClass::Timeout;
