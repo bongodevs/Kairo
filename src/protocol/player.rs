@@ -65,7 +65,10 @@ impl VoiceState {
         !self.token.is_empty()
             && !self.endpoint.is_empty()
             && !self.session_id.is_empty()
-            && self.channel_id.as_deref().is_some_and(|id| !id.is_empty())
+            && self
+                .channel_id
+                .as_deref()
+                .is_some_and(|id| id.parse::<u64>().is_ok())
     }
 }
 
@@ -290,6 +293,25 @@ pub struct PlayerUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A channel id is a snowflake; junk must be rejected rather than silently becoming channel 0.
+    #[test]
+    fn a_voice_state_needs_a_numeric_channel_id() {
+        let mut voice = VoiceState {
+            token: "t".to_string(),
+            endpoint: "e".to_string(),
+            session_id: "s".to_string(),
+            channel_id: Some("123".to_string()),
+        };
+        assert!(voice.is_complete());
+
+        voice.channel_id = Some("abc".to_string());
+        assert!(!voice.is_complete(), "a non-numeric channel id must fail");
+        voice.channel_id = Some(String::new());
+        assert!(!voice.is_complete(), "an empty channel id must fail");
+        voice.channel_id = None;
+        assert!(!voice.is_complete(), "a missing channel id must fail");
+    }
 
     // The wire defaults are a working 500 ms sCurve ramp, not `u64::default()`.
     #[test]
