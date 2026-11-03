@@ -36,7 +36,7 @@ fn service(state: &AppState) -> RestResult<Arc<LyricsService>> {
 fn session(state: &AppState, session_id: &str) -> RestResult<Arc<SocketContext>> {
     state
         .sockets()
-        .get(session_id)
+        .get_any(session_id)
         .ok_or_else(|| RestError::not_found(format!("Session {session_id} not found")))
 }
 
