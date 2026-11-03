@@ -1,12 +1,16 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
-use serde::Serialize;
 use tracing::error;
 
 use player::tools::http::{HttpInterface, HttpResponse};
 use player::tools::json::JsonBrowser;
 
 const SPONSORBLOCK_URL: &str = "https://sponsor.ajay.app/api/skipSegments";
+
+/// How many videos one session keeps SponsorBlock results for. A session cache only has to cover
+/// restarts and replays; the bound keeps a long-lived session's memory flat.
+const CACHE_CAPACITY: usize = 128;
 
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
@@ -25,23 +29,7 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-/// A SponsorBlock segment to skip.
-#[derive(Debug, Clone, Serialize)]
-pub struct Segment {
-    pub category: String,
-    pub start: u64,
-    pub end: u64,
-}
-
-/// A video chapter.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Chapter {
-    pub name: String,
-    pub start: u64,
-    pub end: u64,
-    pub duration: u64,
-}
+pub use crate::protocol::sponsorblock::{Chapter, Segment};
 
 /// A segment or chapter attached to a track position.
 #[derive(Debug, Clone)]
@@ -55,6 +43,50 @@ impl TrackMarkable {
         match self {
             TrackMarkable::Segment(s) => s.start,
             TrackMarkable::Chapter(c) => c.start,
+        }
+    }
+}
+
+/// Session-scoped SponsorBlock results, keyed by video and the guild's category set. Segments are
+/// filtered by categories server-side, so two guilds with different sets need separate entries.
+#[derive(Default)]
+pub struct MarkableCache {
+    entries: HashMap<(String, Vec<String>), Arc<Vec<TrackMarkable>>>,
+    inserted: VecDeque<(String, Vec<String>)>,
+}
+
+impl MarkableCache {
+    fn key(video_id: &str, categories: &HashSet<String>) -> (String, Vec<String>) {
+        let mut categories: Vec<String> = categories.iter().cloned().collect();
+        categories.sort_unstable();
+        (video_id.to_string(), categories)
+    }
+
+    /// The cached result for this video and category set, if one was stored in this session.
+    pub fn get(
+        &self,
+        video_id: &str,
+        categories: &HashSet<String>,
+    ) -> Option<Arc<Vec<TrackMarkable>>> {
+        self.entries.get(&Self::key(video_id, categories)).cloned()
+    }
+
+    /// Store a result, evicting the oldest entry once the cache is full.
+    pub fn insert(
+        &mut self,
+        video_id: &str,
+        categories: &HashSet<String>,
+        markables: Arc<Vec<TrackMarkable>>,
+    ) {
+        let key = Self::key(video_id, categories);
+        if self.entries.insert(key.clone(), markables).is_none() {
+            self.inserted.push_back(key);
+        }
+        while self.entries.len() > CACHE_CAPACITY {
+            let Some(oldest) = self.inserted.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
         }
     }
 }
@@ -253,5 +285,42 @@ mod tests {
         // 2 d + 3 h + 4 m + 5 s.
         assert_eq!(parse_duration_text("2:03:04:05"), 183_845_000);
         assert_eq!(parse_duration_text("nonsense"), 0);
+    }
+
+    fn chapter(name: &str, start: u64) -> Arc<Vec<TrackMarkable>> {
+        Arc::new(vec![TrackMarkable::Chapter(Chapter {
+            name: name.to_string(),
+            start,
+            end: start + 1000,
+            duration: 1000,
+        })])
+    }
+
+    #[test]
+    fn cache_hits_match_on_video_and_category_set() {
+        let mut cache = MarkableCache::default();
+        let music: HashSet<String> = ["music_offtopic".to_string()].into();
+        let sponsor: HashSet<String> = ["sponsor".to_string()].into();
+
+        cache.insert("video", &music, chapter("music", 0));
+
+        assert!(cache.get("video", &music).is_some());
+        assert!(cache.get("video", &sponsor).is_none());
+        assert!(cache.get("other", &music).is_none());
+    }
+
+    #[test]
+    fn cache_is_bounded_and_evicts_the_oldest_entry() {
+        let mut cache = MarkableCache::default();
+        let categories = HashSet::new();
+        for i in 0..=CACHE_CAPACITY {
+            let video = format!("video-{i}");
+            cache.insert(&video, &categories, chapter(&video, i as u64));
+        }
+
+        assert!(cache.get("video-0", &categories).is_none());
+        assert!(cache
+            .get(&format!("video-{CACHE_CAPACITY}"), &categories)
+            .is_some());
     }
 }
