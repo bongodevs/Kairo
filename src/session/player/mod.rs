@@ -9,11 +9,9 @@
 //! [`Track`] for the current track and for the one it replaced is kept in [`PlayerShared`]. A
 //! `TrackEnd(Replaced)` resolves to the previous track and every other event to the current one.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
-use bytes::Bytes;
 use serde_json::{Map, Value};
 use tokio::task::AbortHandle;
 
@@ -22,32 +20,25 @@ use player::track::marker::{MarkerId, MarkerState, TrackMarker};
 use player::track::state::AudioTrackEndReason as EngineEndReason;
 use player::{AudioPlayer, AudioTrack, CrossfadeOptions, TapeOptions};
 
-use voice::{
-    ConnectionState, EventDispatcher, OpusFrameProvider, VoiceConnection, VoiceEvent,
-    VoiceEventListener, VoiceServerInfo,
-};
+use ::voice::{ConnectionState, VoiceConnection};
 
 use crate::protocol::filters::Filters;
 use crate::protocol::load_result::Exception;
 use crate::protocol::message::{EmittedEvent, Message, TrackEndReason};
-use crate::protocol::player::{CrossfadeSettings, Player, PlayerState, VoiceState};
+use crate::protocol::player::VoiceState;
 use crate::protocol::track::Track;
-use crate::rest::error::{now_millis, RestError};
 use crate::session::context::SocketContext;
-use crate::session::loss_counter::AudioLossCounter;
 use crate::session::lyrics::{query_from_info, PlayerLyrics};
 use crate::sponsorblock::{self, TrackMarkable};
+use crate::utils::locked;
+
+pub use loss_counter::{AudioLossCounter, EXPECTED_PACKET_COUNT_PER_MIN};
+pub use update::set_update_interval;
+pub use voice::VoiceConnectError;
 
 use lyrics::LyricsService;
 
 const GAPLESS_LOOKAHEAD_MS: u64 = 500;
-
-static UPDATE_INTERVAL_SECS: OnceLock<u64> = OnceLock::new();
-
-/// Record the configured `playerUpdateInterval`. Called once from `AppState::new`.
-pub fn set_update_interval(secs: u64) {
-    let _ = UPDATE_INTERVAL_SECS.set(secs.max(1));
-}
 
 // The current track and the one it replaced, as protocol tracks.
 #[derive(Default)]
@@ -61,8 +52,8 @@ struct TrackSlots {
 /// The owning [`SocketContext`] is held weakly, since it owns the player in turn.
 pub struct PlayerShared {
     guild_id: u64,
-    context: Weak<SocketContext>,
-    player: Weak<AudioPlayer>,
+    pub(super) context: Weak<SocketContext>,
+    pub(super) player: Weak<AudioPlayer>,
     tracks: Mutex<TrackSlots>,
     // Set just before an `endTime` marker stops the track, so the engine `Stopped` end that follows
     // is reported to clients as `Finished`.
@@ -80,25 +71,25 @@ pub struct PlayerShared {
     loss: Arc<AudioLossCounter>,
     // Captured at construction, so events arriving on the decode thread can hand blocking work to
     // the runtime's bounded pool instead of spawning threads of their own.
-    runtime: tokio::runtime::Handle,
+    pub(super) runtime: tokio::runtime::Handle,
 }
 
 impl PlayerShared {
     fn current_track(&self) -> Option<Track> {
-        self.tracks.lock().unwrap().current.clone()
+        locked(&self.tracks).current.clone()
     }
 
     fn lyrics(&self) -> Option<Arc<PlayerLyrics>> {
-        self.lyrics.lock().unwrap().clone()
+        locked(&self.lyrics).clone()
     }
 
     fn previous_track(&self) -> Option<Track> {
-        self.tracks.lock().unwrap().previous.clone()
+        locked(&self.tracks).previous.clone()
     }
 
     // Make `track` current, moving the old current into `previous` for the `Replaced` event.
     fn replace_current(&self, track: Track) {
-        let mut slots = self.tracks.lock().unwrap();
+        let mut slots = locked(&self.tracks);
         slots.previous = slots.current.take();
         slots.current = Some(track);
     }
@@ -108,34 +99,29 @@ impl PlayerShared {
     // overlap begins before the old executor reaches its terminator.
     fn begin_transition(&self, track: Track) -> Option<Track> {
         let outgoing = self.current_track()?;
-        *self.transition_outgoing.lock().unwrap() = Some(outgoing.clone());
-        *self.transition_incoming.lock().unwrap() = Some(track);
+        *locked(&self.transition_outgoing) = Some(outgoing.clone());
+        *locked(&self.transition_incoming) = Some(track);
         self.in_transition.store(true, Ordering::Release);
         Some(outgoing)
     }
 
     fn abort_transition(&self) {
-        self.transition_outgoing.lock().unwrap().take();
-        self.transition_incoming.lock().unwrap().take();
+        locked(&self.transition_outgoing).take();
+        locked(&self.transition_incoming).take();
         self.in_transition.store(false, Ordering::Release);
     }
 
     fn clear_current(&self) {
-        self.tracks.lock().unwrap().current = None;
+        locked(&self.tracks).current = None;
     }
 
     fn set_user_data(&self, user_data: Map<String, Value>) {
-        if let Some(track) = self.tracks.lock().unwrap().current.as_mut() {
+        if let Some(track) = locked(&self.tracks).current.as_mut() {
             track.user_data = user_data;
         }
     }
 
-    // Drive the loss counter's playback window: a pause or an end closes it, a start or a resume
-    // opens it, and only a gap longer than the acceptable switch time resets the usable-data clock.
-    //
-    // Transition events are skipped on purpose. Those successors overlap the outgoing track, so the
-    // successor's start arrives before the outgoing end and the elapsed-gap comparison would see a
-    // large gap where there is none, suppressing frame stats for a minute after every track.
+    // Update the loss counter playback window across pause, resume, start, and end events.
     fn track_loss_window(&self, event: &AudioEvent) {
         match event {
             AudioEvent::TrackStart(_) if self.in_transition.load(Ordering::Acquire) => {}
@@ -147,89 +133,36 @@ impl PlayerShared {
     }
 }
 
-// Feeds the voice send loop from the engine player while recording frame stats.
-struct CountingProvider {
-    player: Arc<AudioPlayer>,
-    loss: Arc<AudioLossCounter>,
-}
-
-impl OpusFrameProvider for CountingProvider {
-    fn provide(&mut self) -> Option<Bytes> {
-        let frame = self.player.try_provide();
-        // Only count while a track is playing: idle silence is expected, not loss.
-        if self.player.playing_track().is_some() {
-            match &frame {
-                Some(_) => self.loss.record_success(),
-                None => self.loss.record_loss(),
-            }
-        }
-        frame.map(|frame| frame.data)
-    }
-}
-
-// Forwards voice gateway lifecycle to the WebSocket: a close becomes a `WebSocketClosedEvent`, and
-// both a close and a ready are followed by a player update so the client sees the drop, or the
-// gateway coming up, without waiting up to `playerUpdateInterval` seconds for the next tick.
-//
-// A ready fires inside the handshake, before `commit_voice` stores the connection, so that update
-// still reads the previous slot (`connected: false` for a fresh guild). The connect's own result
-// reaches the client through the PATCH response body, as it does in Lavalink.
-struct VoiceCloseForwarder {
-    guild_id: u64,
-    context: Weak<SocketContext>,
-}
-
-impl VoiceEventListener for VoiceCloseForwarder {
-    fn on_event(&self, event: &VoiceEvent) {
-        let Some(context) = self.context.upgrade() else {
-            return;
-        };
-        match event {
-            VoiceEvent::GatewayClosed {
-                code,
-                reason,
-                by_remote,
-            } => {
-                context.send_message(Message::event(EmittedEvent::WebSocketClosed {
-                    guild_id: self.guild_id.to_string(),
-                    code: *code as i32,
-                    reason: reason.clone(),
-                    by_remote: *by_remote,
-                }));
-            }
-            VoiceEvent::GatewayReady { .. } => {}
-            // Every other voice event is internal to the connection.
-            _ => return,
-        }
-        // The player may already be gone, with a destroy racing the close.
-        if let Some(player) = context.get_player(self.guild_id) {
-            context.send_message(player.player_update_message());
-        }
-    }
-}
-
 /// A guild's player: the engine player, the voice connection, and protocol state.
 pub struct LavalinkPlayer {
-    guild_id: u64,
-    user_id: u64,
-    player: Arc<AudioPlayer>,
-    shared: Arc<PlayerShared>,
-    loss: Arc<AudioLossCounter>,
-    voice: Mutex<Option<VoiceConnection>>,
-    voice_state: Mutex<Option<VoiceState>>,
+    pub(super) guild_id: u64,
+    pub(super) user_id: u64,
+    pub(super) player: Arc<AudioPlayer>,
+    pub(super) shared: Arc<PlayerShared>,
+    pub(super) loss: Arc<AudioLossCounter>,
+    pub(super) voice: Mutex<Option<VoiceConnection>>,
+    pub(super) voice_state: Mutex<Option<VoiceState>>,
+    // 4006 re-identify attempts since the last successful handshake.
+    voice_reidentify_attempts: AtomicU32,
     // Serializes a whole `PATCH .../players/{guildId}` body.
     patch_lock: tokio::sync::Mutex<()>,
-    filters: Mutex<Filters>,
-    crossfade_defaults: Option<CrossfadeOptions>,
-    crossfade: Mutex<Option<CrossfadeOptions>>,
+    pub(super) filters: Mutex<Filters>,
+    pub(super) crossfade_defaults: Option<CrossfadeOptions>,
+    pub(super) crossfade: Mutex<Option<CrossfadeOptions>>,
     next_track: Mutex<Option<(Box<dyn AudioTrack>, Track)>>,
     transition_marker: Mutex<Option<MarkerId>>,
-    manual_transition_marker: Mutex<Option<MarkerId>>,
+    pub(super) manual_transition_marker: Mutex<Option<MarkerId>>,
     end_marker: Mutex<Option<MarkerId>>,
     // Present only when the lyrics feature is enabled.
     lyrics: Option<Arc<PlayerLyrics>>,
     // The periodic player-update timer, armed on a track start and cancelled on a track end.
-    update_task: Mutex<Option<AbortHandle>>,
+    pub(super) update_task: Mutex<Option<AbortHandle>>,
+}
+
+/// The reference's `TrackEndMarkerHandler` stops only on `REACHED`/`BYPASSED`. `Late` means the
+/// marker was installed behind the play position, which must not stop the track.
+fn end_marker_stops(state: MarkerState) -> bool {
+    matches!(state, MarkerState::Reached | MarkerState::Bypassed)
 }
 
 impl LavalinkPlayer {
@@ -270,7 +203,7 @@ impl LavalinkPlayer {
             ))
         });
         if let Some(lyrics) = &lyrics {
-            *shared.lyrics.lock().unwrap() = Some(Arc::clone(lyrics));
+            *locked(&shared.lyrics) = Some(Arc::clone(lyrics));
         }
 
         Arc::new(Self {
@@ -281,6 +214,7 @@ impl LavalinkPlayer {
             loss,
             voice: Mutex::new(None),
             voice_state: Mutex::new(None),
+            voice_reidentify_attempts: AtomicU32::new(0),
             patch_lock: tokio::sync::Mutex::new(()),
             filters: Mutex::new(Filters::default()),
             crossfade_defaults,
@@ -318,7 +252,7 @@ impl LavalinkPlayer {
 
     pub fn is_connected(&self) -> bool {
         matches!(
-            self.voice.lock().unwrap().as_ref().map(|c| c.state()),
+            locked(&self.voice).as_ref().map(|c| c.state()),
             Some(ConnectionState::Connected)
         )
     }
@@ -334,7 +268,7 @@ impl LavalinkPlayer {
         self.player.check_cleanup(threshold_ms);
     }
 
-    fn position(&self) -> i64 {
+    pub(super) fn position(&self) -> i64 {
         self.player.position().unwrap_or(0) as i64
     }
 
@@ -365,21 +299,21 @@ impl LavalinkPlayer {
         if !transition_pending {
             self.clear_manual_transition_marker();
         }
-        *self.next_track.lock().unwrap() = next;
+        *locked(&self.next_track) = next;
         self.arm_transition();
     }
 
     /// Apply a complete per-player override. `None` explicitly disables both transition modes.
     pub fn set_crossfade(&self, options: Option<CrossfadeOptions>) {
         self.clear_all_transition_markers();
-        *self.crossfade.lock().unwrap() = options;
+        *locked(&self.crossfade) = options;
         self.arm_transition();
     }
 
     /// Clear the per-player override and restore the server defaults.
     pub fn reset_crossfade(&self) {
         self.clear_all_transition_markers();
-        *self.crossfade.lock().unwrap() = self.crossfade_defaults;
+        *locked(&self.crossfade) = self.crossfade_defaults;
         self.arm_transition();
     }
 
@@ -390,7 +324,7 @@ impl LavalinkPlayer {
 
     pub fn stop(&self) {
         self.clear_all_transition_markers();
-        self.next_track.lock().unwrap().take();
+        locked(&self.next_track).take();
         self.shared.abort_transition();
         self.player.stop_track();
     }
@@ -399,9 +333,12 @@ impl LavalinkPlayer {
     pub fn seek(&self, position_ms: i64) {
         let position = position_ms.max(0) as u64;
         self.player.set_position(position);
-        // Re-anchor live lyrics, in either direction.
-        if let Some(lyrics) = &self.lyrics {
-            lyrics.on_seek(position);
+        // The engine ignores a seek on a non-seekable track, so re-anchoring lyrics would emit a
+        // line the listener never reached.
+        if self.player.is_seekable() {
+            if let Some(lyrics) = &self.lyrics {
+                lyrics.on_seek(position);
+            }
         }
         self.send_player_update();
     }
@@ -419,7 +356,7 @@ impl LavalinkPlayer {
     /// Replace the filter chain and emit a player update.
     pub fn set_filters(&self, filters: Filters) {
         self.player.options().set_filters(filters.to_engine());
-        *self.filters.lock().unwrap() = filters;
+        *locked(&self.filters) = filters;
         self.send_player_update();
     }
 
@@ -428,38 +365,30 @@ impl LavalinkPlayer {
         self.shared.set_user_data(user_data);
     }
 
-    /// Set (or clear, with `None`/`0`) the millisecond position at which to stop the track.
+    /// Set the millisecond position at which to stop the track. A `PATCH` with `endTime: null`
+    /// is a no-op: the reference never clears an installed marker that way.
     pub fn set_end_time(&self, end_time: Option<i64>) {
-        if let Some(id) = self.end_marker.lock().unwrap().take() {
+        let Some(ms) = end_time.filter(|ms| *ms > 0) else {
+            return;
+        };
+        if let Some(id) = locked(&self.end_marker).take() {
             self.player.remove_marker(id);
         }
-        match end_time {
-            Some(ms) if ms > 0 => {
-                let player = Arc::downgrade(&self.player);
-                let shared = Arc::downgrade(&self.shared);
-                let handler: player::track::marker::TrackMarkerHandler =
-                    Box::new(move |state: MarkerState| {
-                        // `Late` and `Bypassed` count too: an `endTime` already behind the play
-                        // position still means stop here.
-                        if matches!(
-                            state,
-                            MarkerState::Reached | MarkerState::Late | MarkerState::Bypassed
-                        ) {
-                            if let (Some(player), Some(shared)) =
-                                (player.upgrade(), shared.upgrade())
-                            {
-                                shared.end_marker_hit.store(true, Ordering::Release);
-                                player.stop_track();
-                            }
-                        }
-                    });
-                let marker = TrackMarker::new(ms as u64, handler);
-                let id = marker.id();
-                *self.end_marker.lock().unwrap() = Some(id);
-                self.player.add_marker(marker);
-            }
-            _ => {}
-        }
+        let player = Arc::downgrade(&self.player);
+        let shared = Arc::downgrade(&self.shared);
+        let handler: player::track::marker::TrackMarkerHandler =
+            Box::new(move |state: MarkerState| {
+                if end_marker_stops(state) {
+                    if let (Some(player), Some(shared)) = (player.upgrade(), shared.upgrade()) {
+                        shared.end_marker_hit.store(true, Ordering::Release);
+                        player.stop_track();
+                    }
+                }
+            });
+        let marker = TrackMarker::new(ms as u64, handler);
+        let id = marker.id();
+        *locked(&self.end_marker) = Some(id);
+        self.player.add_marker(marker);
     }
 
     /// Serialize a player PATCH's mutations against every other PATCH for the same guild.
@@ -473,237 +402,6 @@ impl LavalinkPlayer {
     /// nothing called while the guard is held may re-acquire it.
     pub async fn lock_patch(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.patch_lock.lock().await
-    }
-
-    /// Whether `voice` differs from the current state or the connection dropped.
-    ///
-    /// Cheap synchronous check used before paying for a handshake and again when committing one.
-    /// Both checks dedupe repeated `VOICE_SERVER_UPDATE` PATCHes, so a handshake that finished
-    /// against a superseded target cannot displace the newer connection.
-    pub fn voice_reconnect(&self, voice: &VoiceState) -> bool {
-        let current = self.voice_state.lock().unwrap();
-        match current.as_ref() {
-            Some(existing) => {
-                existing.token != voice.token
-                    || existing.endpoint != voice.endpoint
-                    || existing.session_id != voice.session_id
-                    || existing.channel_id != voice.channel_id
-                    || !self.is_connected()
-            }
-            None => true,
-        }
-    }
-
-    /// Run the Discord gateway + UDP handshake. No player locks are held across the await.
-    ///
-    /// DAVE/MLS setup, TLS and UDP discovery all happen here; the returned connection is not yet
-    /// stored, and nothing gates how many of these run at once.
-    pub async fn handshake_voice(&self, voice: &VoiceState) -> Result<VoiceConnection, RestError> {
-        let channel_id = voice
-            .channel_id
-            .as_deref()
-            .and_then(|id| id.parse::<u64>().ok())
-            .unwrap_or(0);
-        let info = VoiceServerInfo {
-            guild_id: self.guild_id,
-            user_id: self.user_id,
-            channel_id,
-            session_id: voice.session_id.clone(),
-            token: voice.token.clone(),
-            endpoint: voice.endpoint.clone(),
-        };
-
-        let dispatcher = EventDispatcher::new();
-        dispatcher.register(Arc::new(VoiceCloseForwarder {
-            guild_id: self.guild_id,
-            context: self.shared.context.clone(),
-        }) as Arc<dyn VoiceEventListener>);
-
-        let provider = CountingProvider {
-            player: Arc::clone(&self.player),
-            loss: Arc::clone(&self.loss),
-        };
-
-        let started = std::time::Instant::now();
-        let result = VoiceConnection::connect_with_dispatcher(info, provider, dispatcher).await;
-        let elapsed_ms = started.elapsed().as_millis();
-        match result {
-            Ok(connection) => {
-                tracing::debug!(
-                    guild_id = self.guild_id,
-                    elapsed_ms,
-                    "voice handshake succeeded"
-                );
-                Ok(connection)
-            }
-            Err(err) => {
-                tracing::warn!(
-                    guild_id = self.guild_id,
-                    elapsed_ms,
-                    error = %err,
-                    "voice handshake failed"
-                );
-                Err(RestError::internal(format!(
-                    "voice connection failed: {err}"
-                )))
-            }
-        }
-    }
-
-    /// Store a finished handshake. The caller must hold `lock_patch`.
-    ///
-    /// Drops `connection` and returns `false` when the guild no longer needs this target, so a
-    /// handshake that ran against a superseded voice state never displaces the live connection.
-    pub fn commit_voice(&self, voice: VoiceState, connection: VoiceConnection) -> bool {
-        if !self.voice_reconnect(&voice) {
-            connection.disconnect();
-            return false;
-        }
-        if let Some(previous) = self.voice.lock().unwrap().take() {
-            previous.disconnect();
-        }
-        connection.set_speaking(true);
-        *self.voice.lock().unwrap() = Some(connection);
-        *self.voice_state.lock().unwrap() = Some(voice);
-        true
-    }
-
-    /// Outer bound on one voice handshake.
-    ///
-    /// TLS, UDP discovery and MLS keygen all happen inside `handshake_voice`, and the voice crate
-    /// bounds only its own WS connect and WS handshake (30 s each). Without an outer bound a
-    /// half-open socket would hang the PATCH waiting on it forever.
-    const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
-
-    /// Connect `voice` and store the connection, inline on the calling PATCH.
-    ///
-    /// One attempt, no retry, no gate: this is Lavalink's shape, where the request that carries
-    /// the voice update waits for the connect and reports its failure. The guild lock is held only
-    /// for the commit, so a network handshake never blocks a concurrent PATCH.
-    ///
-    /// No player update is emitted on success: as in Lavalink, the PATCH response body is what
-    /// carries the new `connected`/`ping` state.
-    pub async fn connect_voice(&self, voice: VoiceState) -> Result<bool, RestError> {
-        let connection =
-            match tokio::time::timeout(Self::HANDSHAKE_TIMEOUT, self.handshake_voice(&voice)).await
-            {
-                Ok(Ok(connection)) => connection,
-                Ok(Err(err)) => return Err(err),
-                Err(_) => {
-                    return Err(RestError::internal(format!(
-                        "voice handshake timed out after {} ms",
-                        Self::HANDSHAKE_TIMEOUT.as_millis()
-                    )));
-                }
-            };
-        let _serialized = self.lock_patch().await;
-        Ok(self.commit_voice(voice, connection))
-    }
-
-    pub fn player_update_message(&self) -> Message {
-        Message::PlayerUpdate {
-            guild_id: self.guild_id.to_string(),
-            state: self.current_state(),
-        }
-    }
-
-    /// Send a player update to the owning context, unless the session is parked for resume.
-    pub fn send_player_update(&self) {
-        let Some(context) = self.shared.context.upgrade() else {
-            return;
-        };
-        // Snapshots taken while parked are stale; the resume handshake sends fresh ones.
-        if context.is_paused() {
-            return;
-        }
-        context.send_message(self.player_update_message());
-    }
-
-    // Arm this player's periodic update timer, phased to now.
-    //
-    // One timer per player, rather than a node-wide ticker: a shared ticker phases every guild to
-    // process start, so a track beginning just after a tick waits out the rest of the interval
-    // before its first periodic update. The first tick here fires immediately.
-    fn start_update_task(self: &Arc<Self>) {
-        let interval = Duration::from_secs(UPDATE_INTERVAL_SECS.get().copied().unwrap_or(5));
-        // Weak, so a destroyed player is not kept alive by its own timer.
-        let weak = Arc::downgrade(self);
-        let task = self.shared.runtime.spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            loop {
-                ticker.tick().await;
-                match weak.upgrade() {
-                    Some(player) => player.send_player_update(),
-                    None => return,
-                }
-            }
-        });
-        self.swap_update_task(Some(task.abort_handle()));
-    }
-
-    fn stop_update_task(&self) {
-        self.swap_update_task(None);
-    }
-
-    fn swap_update_task(&self, task: Option<AbortHandle>) {
-        let previous = std::mem::replace(&mut *self.update_task.lock().unwrap(), task);
-        if let Some(previous) = previous {
-            previous.abort();
-        }
-    }
-
-    // The live state, reading connection status and heartbeat ping from the voice connection.
-    fn current_state(&self) -> PlayerState {
-        let position = self.position();
-        let guard = self.voice.lock().unwrap();
-        let connected = matches!(
-            guard.as_ref().map(|c| c.state()),
-            Some(ConnectionState::Connected)
-        );
-        // `ping` is `-1` while disconnected and before the first heartbeat ack.
-        let ping = if connected {
-            guard
-                .as_ref()
-                .and_then(|c| c.ping())
-                .map(|ping| ping as i64)
-                .unwrap_or(-1)
-        } else {
-            -1
-        };
-        PlayerState {
-            time: now_millis(),
-            position,
-            connected,
-            ping,
-        }
-    }
-
-    fn voice_state(&self) -> VoiceState {
-        self.voice_state.lock().unwrap().clone().unwrap_or_default()
-    }
-
-    /// A full protocol snapshot of this player, as returned by the REST API.
-    pub fn snapshot(&self) -> Player {
-        let state = self.current_state();
-        let track = self.shared.current_track().map(|mut track| {
-            track.info.position = state.position;
-            track
-        });
-        Player {
-            guild_id: self.guild_id.to_string(),
-            track,
-            volume: self.player.volume(),
-            paused: self.player.is_paused(),
-            state,
-            voice: self.voice_state(),
-            filters: self.filters.lock().unwrap().clone(),
-            crossfade: self
-                .crossfade
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(CrossfadeSettings::from_engine),
-        }
     }
 
     /// The live-lyrics handle, if the lyrics feature is enabled.
@@ -740,98 +438,20 @@ impl LavalinkPlayer {
             lyrics.unsubscribe();
         }
         self.player.stop_track();
-        if let Some(connection) = self.voice.lock().unwrap().take() {
+        if let Some(connection) = locked(&self.voice).take() {
             connection.disconnect();
         }
-        let mut slots = self.shared.tracks.lock().unwrap();
+        let mut slots = locked(&self.shared.tracks);
         slots.current = None;
         slots.previous = None;
     }
 }
 
 mod events;
+pub(crate) mod loss_counter;
 mod markers;
-mod transition;
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // `tokio::time::interval` panics on a zero period, so a `playerUpdateInterval: 0` in the config
-    // has to be clamped before it reaches the update task.
-    #[test]
-    fn update_interval_is_clamped_and_set_once() {
-        set_update_interval(0);
-        assert_eq!(UPDATE_INTERVAL_SECS.get().copied(), Some(1));
-        // A `OnceLock` keeps the first value, so a second call must be a no-op rather than a panic.
-        set_update_interval(9);
-        assert_eq!(UPDATE_INTERVAL_SECS.get().copied(), Some(1));
-    }
-
-    fn test_voice(token: &str) -> VoiceState {
-        VoiceState {
-            token: token.to_string(),
-            endpoint: "e".to_string(),
-            session_id: "s".to_string(),
-            channel_id: Some("c".to_string()),
-        }
-    }
-
-    // Needs a runtime: `LavalinkPlayer::new` captures `Handle::current`.
-    async fn test_player() -> Arc<LavalinkPlayer> {
-        test_player_with_channel().await.0
-    }
-
-    async fn test_player_with_channel() -> (
-        Arc<LavalinkPlayer>,
-        tokio::sync::mpsc::UnboundedReceiver<Message>,
-        // Kept alive: the player holds only a `Weak` context, and dropping this
-        // would close the channel the test asserts on.
-        Arc<SocketContext>,
-    ) {
-        let manager = player::AudioPlayerManager::new();
-        let (sender, rx) = tokio::sync::mpsc::unbounded_channel();
-        let context = SocketContext::new(
-            "test-session".to_string(),
-            1,
-            manager.clone(),
-            None,
-            None,
-            sender,
-        );
-        let engine = manager.create_player();
-        (
-            LavalinkPlayer::new(7, 1, engine, None, None, &context),
-            rx,
-            context,
-        )
-    }
-
-    #[tokio::test]
-    async fn player_update_is_skipped_while_parked() {
-        let (player, _rx, context) = test_player_with_channel().await;
-        context.pause();
-        player.send_player_update();
-
-        let (sender, _sender_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (_epoch, backlog) = context.resume_with(sender);
-        assert!(
-            backlog.is_empty(),
-            "a parked session must not queue stale updates, got {backlog:?}"
-        );
-    }
-
-    // A PATCH that carries the voice update the guild already holds must not pay for a second
-    // handshake. Without a stored connection `voice_reconnect` has to stay true, or the first
-    // connect after a voice state arrives would be skipped and the guild would stay silent.
-    #[tokio::test]
-    async fn voice_reconnect() {
-        let player = test_player().await;
-        let voice = test_voice("a");
-        assert!(player.voice_reconnect(&voice));
-        *player.voice_state.lock().unwrap() = Some(voice.clone());
-        // State matches but nothing is connected, so the connect still has to run.
-        assert!(player.voice_reconnect(&voice));
-        assert!(player.voice_reconnect(&test_voice("b")));
-    }
-}
+mod tests;
+mod transition;
+pub mod update;
+pub mod voice;
