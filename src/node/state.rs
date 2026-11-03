@@ -88,11 +88,12 @@ impl AppState {
             );
         }
 
+        let resumable_limit = config.lavalink.server.resumable_session_limit;
         let state = AppState {
             inner: Arc::new(Inner {
                 config,
                 manager,
-                sockets: SocketServer::new(),
+                sockets: SocketServer::with_limit(resumable_limit),
                 start_time: Instant::now(),
                 route_planner,
                 lyrics_service,
@@ -108,6 +109,25 @@ impl AppState {
         crate::node::runtime_metrics::spawn_runtime_metrics_task();
         spawn_heap_reclaim_task();
         state
+    }
+
+    #[cfg(test)]
+    pub fn test_state() -> Self {
+        let mut config = Config::default();
+        config.lavalink.server.password = "youshallnotpass".to_string();
+        config.metrics.prometheus.enabled = true;
+        config.metrics.prometheus.endpoint = "/metrics".to_string();
+        let resumable_limit = config.lavalink.server.resumable_session_limit;
+        Self {
+            inner: Arc::new(Inner {
+                config,
+                manager: AudioPlayerManager::new(),
+                sockets: SocketServer::with_limit(resumable_limit),
+                start_time: Instant::now(),
+                route_planner: None,
+                lyrics_service: None,
+            }),
+        }
     }
 
     pub fn route_planner(&self) -> Option<&Arc<IpRoutePlanner>> {
@@ -155,6 +175,8 @@ impl AppState {
             frame_stats,
             players: self.inner.sockets.total_players() as i32,
             playing_players: self.inner.sockets.total_playing_players() as i32,
+            loader_running: self.inner.manager.loader_running(),
+            loader_timed_out: self.inner.manager.loader_timed_out(),
             uptime: self.uptime_ms(),
             memory: stats::memory(),
             cpu: stats::cpu(),
@@ -166,7 +188,7 @@ impl AppState {
         let state = self.clone();
         // Weak, so a session dropped without `shutdown()` running cannot be kept alive by its timer.
         let weak = Arc::downgrade(context);
-        TASKS.add_fixed_rate(
+        let handle = TASKS.add_fixed_rate(
             tasks::session_stats(&context.session_id),
             Duration::from_secs(STATS_INTERVAL_SECS),
             move || {
@@ -176,19 +198,15 @@ impl AppState {
                     let Some(context) = weak.upgrade() else {
                         return;
                     };
-                    let stats = state.build_stats(stats::aggregate_frame_stats(&context));
+                    let stats = state.build_stats(context.aggregate_frame_stats());
                     context.send_message(Message::stats(stats));
                 }
             },
         );
+        context.set_stats_task(handle);
     }
 
-    // End any track that nothing has pulled a frame from for `PLAYER_CLEANUP_THRESHOLD_MS`.
-    //
-    // The engine records a frame request on every `try_provide`, so this only fires for players no
-    // voice send loop is draining. Without it a player whose voice connection died keeps its track
-    // active forever: a decode thread and an HTTP connection leak, no track end is emitted, and the
-    // client's queue never advances.
+    // Stop tracks stalled longer than PLAYER_CLEANUP_THRESHOLD_MS to prevent thread leaks.
     fn spawn_player_cleanup_task(&self) {
         let state = self.clone();
         TASKS.add(
@@ -207,11 +225,7 @@ impl AppState {
         );
     }
 
-    // Log file descriptors plus player counts every 30 s.
-    //
-    // This is the gauge that decides the FD-exhaustion theory: if `fd_count` sits
-    // far below `fd_limit` while HTTP still fails, descriptors were never the cause.
-    // The `readdir` runs on the blocking pool so the tick itself never blocks a worker.
+    // Periodically sample file descriptors and active player counts on the blocking pool.
     fn spawn_resource_monitor_task(&self) {
         let state = self.clone();
         TASKS.add("resource_monitor", Duration::from_secs(30), move || {
@@ -224,6 +238,7 @@ impl AppState {
                 tracing::debug!(
                     fd_count = ?fd_count,
                     fd_limit = ?crate::node::stats::fd_limit(),
+                    decode_threads = player::live_decode_threads(),
                     players = state.sockets().total_players(),
                     playing = state.sockets().total_playing_players(),
                     "resource monitor"
@@ -233,11 +248,7 @@ impl AppState {
     }
 }
 
-// Return pages freed since the last pass to the OS.
-//
-// Node-wide rather than per-session: what it reclaims is the allocator's arena cache, which every
-// thread shares. `MIMALLOC_PURGE_DELAY` does the same job continuously but only when the launcher
-// sets it, and only the container images do; this covers a bare binary or a systemd unit too.
+// Periodically return allocator arena pages freed since the last pass to the OS.
 fn spawn_heap_reclaim_task() {
     TASKS.add(
         "heap_reclaim",
