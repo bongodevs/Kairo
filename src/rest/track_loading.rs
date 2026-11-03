@@ -15,6 +15,7 @@ use crate::protocol::load_result::{Exception, LoadResult, Playlist, PlaylistInfo
 use crate::protocol::search::SearchResult;
 use crate::protocol::track::{Track, TrackInfo};
 use crate::rest::error::{RestError, RestResult};
+use crate::rest::json::JsonBody;
 
 /// `GET /v4/loadtracks?identifier=...`, resolve an identifier into a [`LoadResult`].
 ///
@@ -28,19 +29,19 @@ pub async fn load_tracks(
         .get("identifier")
         .ok_or_else(|| RestError::bad_request("Missing identifier query parameter"))?;
 
-    tracing::info!("Got request to load for identifier \"{identifier}\"");
+    tracing::info!(%identifier, "Got request to load identifier");
 
     let manager = state.manager();
     let result = match manager.load_item(identifier.clone()).await {
         player::LoadResult::Track(track) => {
-            tracing::info!("Loaded track {}", track.info().title);
+            tracing::info!(title = %track.info().title, "Loaded track");
             match Track::from_engine(manager, track.as_ref()) {
                 Ok(track) => LoadResult::Track(track),
                 Err(err) => LoadResult::Error(Exception::from_friendly(&err)),
             }
         }
         player::LoadResult::Playlist(playlist) => {
-            tracing::info!("Loaded playlist {}", playlist.name);
+            tracing::info!(name = %playlist.name, "Loaded playlist");
             let is_search = playlist.is_search_result;
             let selected = playlist.selected_track.map(|i| i as i32).unwrap_or(-1);
             let name = playlist.name.clone();
@@ -96,7 +97,7 @@ pub async fn decode_track(
 /// `POST /v4/decodetracks`, decode a JSON array of base64 tracks. An empty array is a `400`.
 pub async fn decode_tracks(
     State(state): State<AppState>,
-    Json(encoded): Json<Vec<String>>,
+    JsonBody(encoded): JsonBody<Vec<String>>,
 ) -> RestResult<Json<Vec<Track>>> {
     if encoded.is_empty() {
         return Err(RestError::bad_request("No tracks to decode provided"));
