@@ -3,24 +3,32 @@
 //! A client opens one socket per session and receives every event on it. The socket carries no
 //! inbound commands, those go over REST; a session id in the handshake asks to resume an earlier one.
 
-mod receiver;
 mod sender;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
-use futures_util::StreamExt;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 use crate::node::AppState;
 use crate::protocol::message::Message;
 use crate::rest::error::RestError;
-use crate::session::SocketContext;
+use crate::session::{SocketContext, OUTBOUND_CAPACITY};
+use crate::utils::locked;
+
+/// The v3 websocket probes answer `200` with an upgrade warning instead of `404`, so an old client
+/// library fails with a readable message. Authentication still applies, as it does in the reference.
+pub async fn legacy_websocket() -> &'static str {
+    tracing::warn!(
+        "This is the old Lavalink websocket endpoint. Please use /v4/websocket instead. If you are \
+         using a client library, update it to a Lavalink v4 compatible version or use Lavalink v3."
+    );
+    "This is the old Lavalink websocket endpoint. Please use /v4/websocket instead."
+}
 
 /// `GET /v4/websocket`, upgrade the connection once the handshake headers check out.
 pub async fn websocket_handler(
@@ -41,15 +49,45 @@ pub async fn websocket_handler(
     let client_name = header_string(&headers, "client-name");
     let user_agent = header_string(&headers, "user-agent");
 
-    // `Session-Resumed` rides on the 101 response, so probe before the upgrade; the session itself
-    // is only attached once the socket exists.
-    let resumable = session_id
+    // `Session-Resumed` rides on the 101 response, so claim the parked session before the upgrade.
+    // The claim is the single decision behind both the header and `ready.resumed`, and it keeps two
+    // handshakes with the same Session-Id from both resuming the entry.
+    let claimed = session_id
         .as_deref()
-        .is_some_and(|id| state.sockets().is_attachable(id));
+        .and_then(|id| claim_parked(&state, id));
+    // Only a claim or a live session resumes. A parked entry already claimed by another handshake
+    // must not make this one advertise a resume it will not get.
+    let resumable = claimed.is_some()
+        || session_id
+            .as_deref()
+            .is_some_and(|id| state.sockets().get(id).is_some());
 
-    let mut response = ws.on_upgrade(move |socket| {
-        handle_socket(socket, state, user_id, session_id, client_name, user_agent)
-    });
+    // The claim is handed to whichever callback runs: the socket task on success, the re-park path on
+    // a failed upgrade, so a transport error cannot strand the session in the active map.
+    let claim = Arc::new(Mutex::new(claimed));
+    let claim_on_upgrade = Arc::clone(&claim);
+    let claim_on_failure = Arc::clone(&claim);
+    let failure_state = state.clone();
+
+    let mut response = ws
+        .on_failed_upgrade(move |error| {
+            tracing::warn!(%error, "websocket upgrade failed");
+            if let Some(context) = locked(&claim_on_failure).take() {
+                release_claim(&failure_state, context);
+            }
+        })
+        .on_upgrade(move |socket| {
+            let claimed = locked(&claim_on_upgrade).take();
+            handle_socket(
+                socket,
+                state,
+                user_id,
+                session_id,
+                claimed,
+                client_name,
+                user_agent,
+            )
+        });
     response.headers_mut().insert(
         "Session-Resumed",
         if resumable {
@@ -59,6 +97,14 @@ pub async fn websocket_handler(
         },
     );
     response
+}
+
+// Claim a parked session for this handshake before the upgrade, cancelling its expiry timer so the
+// socket's own resume path re-arms it. `None` means this handshake creates a fresh session.
+fn claim_parked(state: &AppState, session_id: &str) -> Option<Arc<SocketContext>> {
+    let context = state.sockets().claim_resumable(session_id)?;
+    context.stop_resume_timeout();
+    Some(context)
 }
 
 fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -73,28 +119,26 @@ async fn handle_socket(
     state: AppState,
     user_id: u64,
     requested_session: Option<String>,
+    claimed: Option<Arc<SocketContext>>,
     client_name: Option<String>,
     user_agent: Option<String>,
 ) {
-    let (sink, stream) = socket.split();
-    let (sender, receiver) = mpsc::unbounded_channel::<Message>();
+    let (sender, receiver) = mpsc::channel::<Message>(OUTBOUND_CAPACITY);
 
-    let (context, resumed, epoch, backlog) =
-        attach(&state, requested_session.as_deref(), user_id, sender);
+    let (context, resumed, epoch, backlog) = attach(
+        &state,
+        requested_session.as_deref(),
+        claimed,
+        user_id,
+        sender,
+    );
     tracing::info!(session = %context.session_id, resumed, "websocket ready");
     if !resumed {
         log_new_connection(client_name, user_agent);
     }
 
-    // Both halves are one socket: whichever ends first stops the other.
-    let write_task = tokio::spawn(sender::write_loop(
-        sink,
-        receiver,
-        backlog,
-        context.session_id.clone(),
-    ));
-    let read_task = tokio::spawn(receiver::read_loop(stream, context.session_id.clone()));
-    let reason = supervise(read_task, write_task).await;
+    let session_id = context.session_id.clone();
+    let reason = sender::pump(socket, receiver, backlog, session_id).await;
 
     tracing::debug!(
         session = %context.session_id,
@@ -106,7 +150,7 @@ async fn handle_socket(
 
 fn log_new_connection(client_name: Option<String>, user_agent: Option<String>) {
     match (client_name, user_agent) {
-        (Some(name), _) => tracing::info!("Connection successfully established from {name}"),
+        (Some(name), _) => tracing::info!(client = %name, "Connection successfully established"),
         (None, agent) => {
             tracing::info!("Connection successfully established");
             match agent {
@@ -123,43 +167,31 @@ fn log_new_connection(client_name: Option<String>, user_agent: Option<String>) {
 
 /// Which half ended first, for the teardown log.
 #[derive(Debug)]
-enum Ended {
+pub(super) enum Ended {
     Read,
     Write,
-}
-
-/// Run both halves until either ends, then stop the other.
-async fn supervise(mut read_task: JoinHandle<()>, mut write_task: JoinHandle<()>) -> Ended {
-    tokio::select! {
-        _ = &mut read_task => {
-            write_task.abort();
-            Ended::Read
-        }
-        _ = &mut write_task => {
-            read_task.abort();
-            Ended::Write
-        }
-    }
 }
 
 fn attach(
     state: &AppState,
     requested_session: Option<&str>,
+    claimed: Option<Arc<SocketContext>>,
     user_id: u64,
-    sender: mpsc::UnboundedSender<Message>,
+    sender: mpsc::Sender<Message>,
 ) -> (Arc<SocketContext>, bool, u64, Vec<Message>) {
-    if let Some(id) = requested_session {
-        // `ready` leads the backlog, ahead of the resume queue and the player updates.
-        if let Some(context) = state.sockets().take_resumable(id) {
-            let (epoch, queued) = context.resume_with(sender);
-            let mut backlog = Vec::with_capacity(queued.len() + 1);
-            backlog.push(ready(&context.session_id, true));
-            backlog.extend(queued);
-            for player in context.players() {
-                player.send_player_update();
-            }
-            return (context, true, epoch, backlog);
+    if let Some(context) = claimed {
+        state.sockets().finish_claim(&context.session_id);
+        state.sockets().insert(Arc::clone(&context));
+        let (epoch, queued) = context.resume_with(sender);
+        let mut backlog = Vec::with_capacity(queued.len() + 1);
+        backlog.push(ready(&context.session_id, true));
+        backlog.extend(queued);
+        for player in context.players() {
+            player.send_player_update();
         }
+        return (context, true, epoch, backlog);
+    }
+    if let Some(id) = requested_session {
         if let Some(context) = state.sockets().get(id) {
             let epoch = context.attach_sender(sender);
             for player in context.players() {
@@ -204,20 +236,7 @@ fn on_disconnect(state: &AppState, context: Arc<SocketContext>, epoch: u64) {
     }
 
     if context.is_resuming() {
-        let timeout = context.resume_timeout_secs();
-        state.sockets().move_to_resumable(&session_id);
-        context.pause();
-        tracing::info!(session = %session_id, timeout, "session parked for resume");
-
-        let state = state.clone();
-        let timer = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(timeout)).await;
-            if let Some(context) = state.sockets().drop_resumable(&session_id) {
-                tracing::info!(session = %session_id, "resume window expired; destroying session");
-                context.shutdown();
-            }
-        });
-        context.arm_resume_timeout(timer.abort_handle());
+        park_session(state, context);
     } else {
         state.sockets().remove(&session_id);
         context.shutdown();
@@ -225,30 +244,107 @@ fn on_disconnect(state: &AppState, context: Arc<SocketContext>, epoch: u64) {
     }
 }
 
+// Move a session to the resumable map and arm its expiry timer after a resumable disconnect.
+fn park_session(state: &AppState, context: Arc<SocketContext>) {
+    let session_id = context.session_id.clone();
+    let timeout = context.resume_timeout_secs();
+    state.sockets().move_to_resumable(&session_id);
+    context.pause();
+    tracing::info!(session = %session_id, timeout, "session parked for resume");
+    arm_resume_timer(state, &context);
+}
+
+// A failed upgrade leaves the claimed session where it already was, parked, with a fresh window.
+fn release_claim(state: &AppState, context: Arc<SocketContext>) {
+    let session_id = context.session_id.clone();
+    let timeout = context.resume_timeout_secs();
+    state.sockets().release_claim(&session_id);
+    tracing::info!(session = %session_id, timeout, "upgrade failed; session stays parked");
+    arm_resume_timer(state, &context);
+}
+
+fn arm_resume_timer(state: &AppState, context: &Arc<SocketContext>) {
+    let session_id = context.session_id.clone();
+    let timeout = context.resume_timeout_secs();
+    let state = state.clone();
+    let timer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(timeout)).await;
+        if let Some(context) = state.sockets().drop_resumable(&session_id) {
+            tracing::info!(session = %session_id, "resume window expired; destroying session");
+            context.shutdown();
+        }
+    });
+    context.arm_resume_timeout(timer.abort_handle());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::future;
 
-    // A dead write half used to leave the session live with events draining into nothing. Coupling
-    // the halves means a finished write task ends the supervisor even while the read half blocks.
-    #[tokio::test]
-    async fn dead_write_half_tears_down_the_session() {
-        let read = tokio::spawn(future::pending::<()>());
-        let write = tokio::spawn(async {});
-        let ended = tokio::time::timeout(Duration::from_secs(1), supervise(read, write))
-            .await
-            .expect("supervisor must return when the write half ends");
-        assert!(matches!(ended, Ended::Write));
+    fn park(state: &AppState, id: &str) {
+        let (sender, _receiver) = mpsc::channel(OUTBOUND_CAPACITY);
+        let context = SocketContext::new(
+            id.to_string(),
+            1,
+            player::AudioPlayerManager::new(),
+            None,
+            None,
+            sender,
+        );
+        state.sockets().insert(context);
+        state.sockets().move_to_resumable(id);
     }
 
+    // The header is written from the claim, and the attach path consumes that same claim, so a
+    // parked session cannot advertise a resume and then start a fresh one.
+    #[test]
+    fn the_resume_header_and_ready_come_from_one_claim() {
+        let state = AppState::test_state();
+        park(&state, "parked");
+
+        let claimed = claim_parked(&state, "parked");
+        assert!(claimed.is_some(), "the handshake claims the parked session");
+
+        let (sender, _receiver) = mpsc::channel(OUTBOUND_CAPACITY);
+        let (context, resumed, _, backlog) = attach(&state, Some("parked"), claimed, 1, sender);
+
+        assert!(resumed);
+        assert_eq!(context.session_id, "parked");
+        assert!(matches!(
+            backlog.first(),
+            Some(Message::Ready { resumed: true, .. })
+        ));
+    }
+
+    // Two handshakes may both see the parked id; only the one that claims it resumes, the other
+    // creates a fresh session instead of attaching to the same context.
     #[tokio::test]
-    async fn closed_read_half_tears_down_the_session() {
-        let read = tokio::spawn(async {});
-        let write = tokio::spawn(future::pending::<()>());
-        let ended = tokio::time::timeout(Duration::from_secs(1), supervise(read, write))
-            .await
-            .expect("supervisor must return when the read half ends");
-        assert!(matches!(ended, Ended::Read));
+    async fn only_one_handshake_can_claim_a_parked_session() {
+        let state = AppState::test_state();
+        park(&state, "parked");
+
+        assert!(claim_parked(&state, "parked").is_some());
+        assert!(claim_parked(&state, "parked").is_none());
+        assert!(state.sockets().get("parked").is_none());
+
+        let (sender, _receiver) = mpsc::channel(OUTBOUND_CAPACITY);
+        let (context, resumed, _, _) = attach(&state, Some("parked"), None, 1, sender);
+
+        assert!(!resumed);
+        assert_ne!(context.session_id, "parked");
+        // The winner's session stays parked and reachable while its upgrade completes.
+        assert!(state.sockets().get_any("parked").is_some());
+    }
+
+    // A transport-level upgrade failure must put the claim back so the client can retry.
+    #[tokio::test]
+    async fn a_failed_upgrade_releases_the_claim() {
+        let state = AppState::test_state();
+        park(&state, "parked");
+
+        let claimed = claim_parked(&state, "parked").expect("first claim");
+        release_claim(&state, claimed);
+
+        assert!(claim_parked(&state, "parked").is_some());
     }
 }
