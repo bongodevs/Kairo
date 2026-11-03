@@ -9,9 +9,9 @@ pub mod config;
 pub mod node;
 pub mod protocol;
 pub mod rest;
-pub mod routeplanner;
+pub(crate) mod routeplanner;
 pub mod session;
-pub mod sponsorblock;
+pub(crate) mod sponsorblock;
 pub mod utils;
 
 use std::sync::LazyLock;
