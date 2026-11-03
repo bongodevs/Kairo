@@ -16,6 +16,7 @@ resamplingQuality = "LOW" # LOW | MEDIUM | HIGH
 trackStuckThresholdMs = 10000
 useSeekGhosting = true
 playerUpdateInterval = 5 # seconds between playerUpdate messages
+resumableSessionLimit = 4096 # parked sessions kept for resume; the oldest is destroyed past this
 
 # Outbound HTTP proxy for every source and track request.
 # [lavalink.server.httpConfig]
