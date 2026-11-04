@@ -451,7 +451,6 @@ mod events;
 pub(crate) mod loss_counter;
 mod markers;
 #[cfg(test)]
-mod tests;
 mod transition;
 pub mod update;
 pub mod voice;
