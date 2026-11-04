@@ -2117,7 +2117,7 @@ dependencies = [
 [[package]]
 name = "player"
 version = "0.1.14"
-source = "git+https://github.com/bongodevs/player?rev=a2d27bc8a93f1d61534bd07fa015d81031f0cbb0#a2d27bc8a93f1d61534bd07fa015d81031f0cbb0"
+source = "git+https://github.com/bongodevs/player?rev=37fb92dcbe189a04f131eff133574a40d9eeae39#37fb92dcbe189a04f131eff133574a40d9eeae39"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -2853,7 +2853,7 @@ dependencies = [
 [[package]]
 name = "sources"
 version = "0.1.33"
-source = "git+https://github.com/bongodevs/sources?rev=39a0d9575cfa64740af2474b4d23d56888d4a923#39a0d9575cfa64740af2474b4d23d56888d4a923"
+source = "git+https://github.com/bongodevs/sources?rev=c479a4e62904ba20f888fb92680ba7de4962d6e6#c479a4e62904ba20f888fb92680ba7de4962d6e6"
 dependencies = [
  "aes",
  "base64 0.22.1",
