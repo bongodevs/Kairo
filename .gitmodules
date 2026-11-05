@@ -7,6 +7,7 @@
 [submodule "crates/sources"]
 	path = crates/sources
 	url = https://github.com/bongodevs/sources.git
+	branch = remote-yt
 [submodule "crates/voice"]
 	path = crates/voice
 	url = https://github.com/bongodevs/voice.git

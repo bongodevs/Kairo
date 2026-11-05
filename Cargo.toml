@@ -95,3 +95,7 @@ codegen-units = 1
 strip = "symbols"
 panic = "unwind"
 overflow-checks = false
+
+# Use the checkout in this workspace while the remote-resolver work is in flight.
+[patch."https://github.com/bongodevs/sources"]
+sources = { path = "crates/sources" }

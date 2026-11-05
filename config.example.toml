@@ -300,6 +300,16 @@ enabled = false
 url = "https://your-cipher-service" # exposes /get_sts, /resolve_url and /get_po_token
 # password = "" # optional Authorization value
 # userAgent = "" # optional UA for cipher requests
+
+# Out-of-process resolver. When enabled, Kairo sends metadata and playback lookups
+# to the Bun service and never touches InnerTube, cookies, ciphers or PO tokens itself.
+# KAIRO_YOUTUBE_URL / KAIRO_YOUTUBE_TOKEN override url / token at startup.
+[sources.youtube.remote]
+enabled = false
+url = "http://yt:8080"
+token = ""
+timeoutSeconds = 10
+
 # Shared credential store. Sources take credentials from here instead of this file:
 # one key per provider is in flight at a time and is reported back before the next
 # is taken. Optional: deezer falls back to sources.deezer.arls, youtube to

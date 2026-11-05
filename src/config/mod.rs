@@ -72,6 +72,7 @@ impl Config {
     ///
     /// Panics if the file cannot be read or parsed, since there is nothing to serve without it.
     /// The `PORT` environment variable, when set, overrides the file's `server.port`.
+    /// `KAIRO_YOUTUBE_URL` / `KAIRO_YOUTUBE_TOKEN` likewise override the remote resolver's address.
     pub fn new() -> Self {
         let path = std::env::args()
             .nth(1)
@@ -82,6 +83,7 @@ impl Config {
         let mut config = Self::from_toml(&content)
             .unwrap_or_else(|e| panic!("Failed to parse config '{}': {}", path, e));
         config.set_port(std::env::var("PORT").ok().as_deref());
+        config.sources.youtube.remote.apply_env();
         config
     }
 

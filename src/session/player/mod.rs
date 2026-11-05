@@ -450,7 +450,6 @@ impl LavalinkPlayer {
 mod events;
 pub(crate) mod loss_counter;
 mod markers;
-#[cfg(test)]
 mod transition;
 pub mod update;
 pub mod voice;
