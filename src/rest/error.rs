@@ -1,7 +1,5 @@
 //! Error responses and the middleware that renders them as the v4 JSON error body.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{header, StatusCode};
@@ -14,7 +12,7 @@ use serde::Serialize;
 pub struct RestError {
     pub status: StatusCode,
     pub message: String,
-    /// Sent back only when the request asked for it with `?trace=true`.
+    /// Sent back only when the request asked for it with `?trace`.
     pub trace: Option<String>,
 }
 
@@ -44,15 +42,6 @@ impl RestError {
 
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, message)
-    }
-
-    pub fn service_unavailable(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
-    }
-
-    pub fn with_trace(mut self, trace: impl Into<String>) -> Self {
-        self.trace = Some(trace.into());
-        self
     }
 
     /// A `400` built from a [`player::FriendlyException`], with its cause as the trace.
@@ -142,17 +131,12 @@ pub async fn error_body_middleware(request: Request, next: Next) -> Response {
         .into_response()
 }
 
+// Spring's `ON_PARAM` triggers on the parameter's presence, so `?trace`, `?trace=true` and even
+// `?trace=false` all request the trace.
 fn query_flag(query: &str, key: &str) -> bool {
-    query.split('&').any(|pair| {
-        let mut it = pair.splitn(2, '=');
-        it.next() == Some(key) && it.next() == Some("true")
-    })
+    query
+        .split('&')
+        .any(|pair| pair.split('=').next() == Some(key))
 }
 
-/// The current unix time in milliseconds.
-pub fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+pub use crate::utils::time::now_millis;

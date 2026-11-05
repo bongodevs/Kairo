@@ -9,12 +9,13 @@ use axum::Json;
 
 use crate::node::AppState;
 use crate::rest::error::{RestError, RestResult};
+use crate::rest::json::JsonBody;
 use crate::session::SocketContext;
 
 fn session(state: &AppState, session_id: &str) -> RestResult<Arc<SocketContext>> {
     state
         .sockets()
-        .get(session_id)
+        .get_any(session_id)
         .ok_or_else(|| RestError::not_found(format!("Session {session_id} not found")))
 }
 
@@ -34,7 +35,7 @@ pub async fn get_categories(
 pub async fn set_categories(
     State(state): State<AppState>,
     Path((session_id, guild_id)): Path<(String, u64)>,
-    Json(categories): Json<Vec<String>>,
+    JsonBody(categories): JsonBody<Vec<String>>,
 ) -> RestResult<StatusCode> {
     let context = session(&state, &session_id)?;
     context.set_sponsorblock_categories(guild_id, categories.into_iter().collect::<HashSet<_>>());

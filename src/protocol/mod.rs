@@ -17,6 +17,7 @@ pub mod player;
 pub mod routeplanner;
 pub mod search;
 pub mod session;
+pub mod sponsorblock;
 pub mod stats;
 pub mod track;
 

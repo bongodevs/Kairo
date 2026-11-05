@@ -14,6 +14,7 @@ use serde_json::json;
 
 use crate::node::AppState;
 use crate::rest::error::{RestError, RestResult};
+use crate::rest::json::JsonBody;
 
 /// `GET /v4/routeplanner/status`, the planner status, or `204 No Content` when unconfigured.
 pub async fn status(State(state): State<AppState>) -> Response {
@@ -27,14 +28,14 @@ pub async fn status(State(state): State<AppState>) -> Response {
 
 /// Body of `POST /v4/routeplanner/free/address`.
 #[derive(Debug, Deserialize)]
-pub struct FreeAddressRequest {
-    pub address: String,
+pub(crate) struct FreeAddressRequest {
+    pub(crate) address: String,
 }
 
 /// `POST /v4/routeplanner/free/address`, un-mark a single failing address.
-pub async fn free_address(
+pub(crate) async fn free_address(
     State(state): State<AppState>,
-    Json(request): Json<FreeAddressRequest>,
+    JsonBody(request): JsonBody<FreeAddressRequest>,
 ) -> RestResult<StatusCode> {
     let planner = state.route_planner().ok_or_else(disabled)?;
     // An unparseable address is a `400`, not a silent no-op reported as success.

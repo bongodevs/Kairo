@@ -85,6 +85,9 @@ enum LyricsCmd {
     },
     // Drop all lyrics state and remove any armed marker.
     Clear,
+    // The owning player handle is gone: end the coordinator instead of leaving it alive on its own
+    // sender clone.
+    Shutdown,
 }
 
 /// Per-player lyrics handle, owned by the [`LavalinkPlayer`](super::player::LavalinkPlayer).
@@ -191,6 +194,19 @@ impl PlayerLyrics {
             position_ms,
         });
     }
+
+    /// The current sync epoch, for tests that need to see whether a seek re-anchored.
+    #[cfg(test)]
+    pub(crate) fn sync_epoch(&self) -> u64 {
+        self.epochs.sync()
+    }
+}
+
+impl Drop for PlayerLyrics {
+    fn drop(&mut self) {
+        // Non-blocking: the coordinator may already be gone, and Drop must not wait on it.
+        let _ = self.tx.send(LyricsCmd::Shutdown);
+    }
 }
 
 // State owned by the coordinator task alone, so it needs no synchronization.
@@ -232,6 +248,11 @@ async fn coordinator(
     let guild = guild_id.to_string();
 
     while let Some(cmd) = rx.recv().await {
+        // The coordinator holds a sender clone, so the channel never closes on its own. Shutdown is
+        // the only way out once the owning handle drops.
+        if matches!(cmd, LyricsCmd::Shutdown) {
+            break;
+        }
         // If the owning context is gone, there is nothing left to serve.
         let Some(context) = context.upgrade() else {
             break;
@@ -314,6 +335,8 @@ async fn coordinator(
                 state.data = None;
                 state.last_line_idx = -1;
             }
+            // Handled before the context upgrade, so this arm is only for exhaustiveness.
+            LyricsCmd::Shutdown => break,
         }
     }
 }
@@ -426,4 +449,49 @@ fn anchor(
     }
 
     arm_next(state, player, tx, epochs, (target + 1) as usize);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::lyrics::LyricsConfig;
+
+    // The coordinator owns a sender clone, so dropping the handle alone does not close the
+    // channel. The handle has to send Shutdown for the task to end.
+    #[tokio::test]
+    async fn dropping_the_handle_sends_shutdown() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let lyrics = PlayerLyrics {
+            service: Arc::new(LyricsService::new(&LyricsConfig::default())),
+            runtime: tokio::runtime::Handle::current(),
+            tx,
+            subscribed: AtomicBool::new(false),
+            skip_track_source: AtomicBool::new(false),
+            epochs: Arc::new(LyricsEpochs::default()),
+        };
+
+        drop(lyrics);
+
+        assert!(matches!(rx.recv().await, Some(LyricsCmd::Shutdown)));
+    }
+
+    #[tokio::test]
+    async fn the_coordinator_stops_on_shutdown() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(coordinator(
+            rx,
+            tx.clone(),
+            Weak::new(),
+            Weak::new(),
+            1,
+            Arc::new(LyricsEpochs::default()),
+        ));
+
+        tx.send(LyricsCmd::Shutdown).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_millis(500), task)
+            .await
+            .expect("the coordinator must exit after Shutdown")
+            .unwrap();
+    }
 }

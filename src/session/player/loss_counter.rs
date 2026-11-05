@@ -11,6 +11,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::utils::locked;
+
 /// Expected number of 20 ms frames per minute.
 pub const EXPECTED_PACKET_COUNT_PER_MIN: i64 = 60 * 1000 / 20;
 
@@ -51,21 +53,21 @@ impl AudioLossCounter {
 
     /// Record a frame that went out.
     pub fn record_success(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = locked(&self.inner);
         self.rotate(&mut inner);
         inner.cur_success += 1;
     }
 
     /// Record a frame the player had no audio ready for.
     pub fn record_loss(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = locked(&self.inner);
         self.rotate(&mut inner);
         inner.cur_loss += 1;
     }
 
     /// The last full minute's `(sent, nulled)` counts, which callers aggregate themselves.
     pub fn last_minute(&self) -> (i64, i64) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = locked(&self.inner);
         self.rotate(&mut inner);
         (inner.last_success, inner.last_loss)
     }
@@ -73,7 +75,7 @@ impl AudioLossCounter {
     /// Playback started or resumed.
     pub fn on_playback_started(&self) {
         let now = self.start.elapsed();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = locked(&self.inner);
         inner.last_track_started = Some(now);
         // A seamless switch keeps the window, a real gap or a first start reopens it.
         let gap_exceeded = matches!(
@@ -89,24 +91,17 @@ impl AudioLossCounter {
     /// Playback stopped or paused.
     pub fn on_playback_stopped(&self) {
         let now = self.start.elapsed();
-        self.inner.lock().unwrap().last_track_ended = Some(now);
+        locked(&self.inner).last_track_ended = Some(now);
     }
 
     /// Whether this player's last-minute bucket is worth reporting.
     pub fn is_data_usable(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap()
-            .data_usable_at(self.start.elapsed())
+        locked(&self.inner).data_usable_at(self.start.elapsed())
     }
 }
 
 impl Inner {
-    // Roll the current-minute counters into the last-minute bucket when `minute` is a new one.
-    //
-    // A jump of more than one minute means nothing was recorded in between, so the last complete
-    // minute really is empty; carrying the older bucket forward would report counts from minutes ago
-    // as the current ones.
+    // Roll current-minute loss counters into the last-minute bucket on minute transitions.
     fn rotate_to(&mut self, minute: u64) {
         if minute == self.current_minute {
             return;
@@ -202,7 +197,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(150));
         counter.on_playback_started();
 
-        let inner = counter.inner.lock().unwrap();
+        let inner = locked(&counter.inner);
         assert!(
             inner.playing_since.unwrap() >= Duration::from_millis(150),
             "a >100ms gap must move playing_since to the resume"

@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::node::tasks::TASKS;
+use crate::utils::locked;
 
 // Last (sample time, per-worker busy totals). First tick only stores a baseline.
 static LAST: Mutex<Option<(Instant, Vec<Duration>)>> = Mutex::new(None);
@@ -32,7 +33,7 @@ pub fn spawn_runtime_metrics_task() {
             .collect();
 
         let (max_busy, avg_busy, saturated) = {
-            let mut last = LAST.lock().unwrap();
+            let mut last = locked(&LAST);
             match last.as_ref() {
                 Some((at, prev)) if prev.len() == current.len() => {
                     let elapsed = now.duration_since(*at).as_secs_f64().max(f64::EPSILON);

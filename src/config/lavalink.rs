@@ -38,6 +38,8 @@ pub struct LavalinkServerConfig {
     pub use_seek_ghosting: bool,
     /// Seconds between `playerUpdate` messages.
     pub player_update_interval: u64,
+    /// Most sessions that may stay parked awaiting resume; the oldest is destroyed past this.
+    pub resumable_session_limit: usize,
     /// Which filters are enabled. A disabled one is rejected on a player update.
     pub filters: FiltersToggleConfig,
     /// Outbound IP rotation, `lavalink.server.ratelimit.*`.
@@ -61,6 +63,7 @@ impl Default for LavalinkServerConfig {
             track_stuck_threshold_ms: 10_000,
             use_seek_ghosting: true,
             player_update_interval: 5,
+            resumable_session_limit: 4096,
             filters: FiltersToggleConfig::default(),
             ratelimit: RatelimitConfig::default(),
             http_config: HttpConfig::default(),

@@ -14,12 +14,13 @@ use crate::protocol::omissible::Omissible;
 use crate::protocol::player::{Player, PlayerUpdate};
 use crate::protocol::track::Track;
 use crate::rest::error::{RestError, RestResult};
+use crate::rest::json::JsonBody;
 use crate::session::SocketContext;
 
 fn session(state: &AppState, session_id: &str) -> RestResult<Arc<SocketContext>> {
     state
         .sockets()
-        .get(session_id)
+        .get_any(session_id)
         .ok_or_else(|| RestError::not_found(format!("Session {session_id} not found")))
 }
 
@@ -70,7 +71,7 @@ pub async fn patch_player(
     State(state): State<AppState>,
     Path((session_id, guild_id)): Path<(String, u64)>,
     Query(params): Query<HashMap<String, String>>,
-    Json(update): Json<PlayerUpdate>,
+    JsonBody(update): JsonBody<PlayerUpdate>,
 ) -> RestResult<Json<Player>> {
     let context = session(&state, &session_id)?;
     let no_replace = params
@@ -134,6 +135,17 @@ pub async fn patch_player(
     let player = context.get_or_create_player(guild_id);
     let updating_track = encoded.is_present() || identifier.is_present();
 
+    // Connect inline before the veto: `noReplace` skips only the track load, not the voice move.
+    match update.voice {
+        Omissible::Present(voice) if player.voice_reconnect(&voice) => {
+            player
+                .connect_voice(voice)
+                .await
+                .map_err(|err| RestError::internal(err.to_string()))?;
+        }
+        _ => {}
+    }
+
     // `noReplace` vetoes the load outright, so check it before paying for a resolve. Re-checked
     // under the lock below, where another PATCH may have started a track in the meantime.
     if updating_track && no_replace && player.has_track() {
@@ -174,17 +186,6 @@ pub async fn patch_player(
     } else {
         None
     };
-
-    // Connect inline, as Lavalink does: this PATCH waits for the handshake and reports its
-    // failure as `500`. `voice_reconnect` dedupes the same target, so a repeated
-    // `VOICE_SERVER_UPDATE` for an already-connected guild costs no handshake. Validation
-    // errors above stay synchronous (`400`).
-    match update.voice {
-        Omissible::Present(voice) if player.voice_reconnect(&voice) => {
-            player.connect_voice(voice).await?;
-        }
-        _ => {}
-    }
 
     // Serialise the mutations per guild so a concurrent PATCH can't interleave halfway through.
     let _serialized = player.lock_patch().await;
@@ -357,7 +358,7 @@ mod tests {
             token: "t".to_string(),
             endpoint: "127.0.0.1:1".to_string(),
             session_id: "s".to_string(),
-            channel_id: Some("c".to_string()),
+            channel_id: Some("123".to_string()),
         }
     }
 
@@ -368,14 +369,14 @@ mod tests {
         }
     }
 
-    async fn patched_state() -> (AppState, tokio::sync::mpsc::UnboundedReceiver<Message>) {
+    async fn patched_state() -> (AppState, tokio::sync::mpsc::Receiver<Message>) {
         let mut config = Config::default();
         // Keep the process-global update interval deterministic: the unit test
         // for clamping assumes the first `set_update_interval` call wins with a
         // clamped 1, and test order within one binary is undefined.
         config.lavalink.server.player_update_interval = 0;
         let state = AppState::new(config);
-        let (sender, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, rx) = tokio::sync::mpsc::channel(crate::session::OUTBOUND_CAPACITY);
         let context = SocketContext::new(
             SESSION.to_string(),
             1,
@@ -393,7 +394,7 @@ mod tests {
             State(state.clone()),
             Path((SESSION.to_string(), guild)),
             Query(HashMap::new()),
-            Json(voice_update()),
+            JsonBody(voice_update()),
         )
         .await
     }
@@ -407,8 +408,95 @@ mod tests {
             .unwrap()
     }
 
-    // Voice connects inline on the PATCH, so the refused handshake fails the request itself:
-    // the same mapping Lavalink has (its handler throws INTERNAL_SERVER_ERROR).
+    // Junk in channelId must be a client error, not a silent connection to channel 0.
+    #[tokio::test]
+    async fn a_non_numeric_channel_id_is_rejected() {
+        let (state, _rx) = patched_state().await;
+        let mut voice = refused_voice();
+        voice.channel_id = Some("abc".to_string());
+        let update = PlayerUpdate {
+            voice: Omissible::Present(voice),
+            ..Default::default()
+        };
+        let err = patch_player(
+            State(state),
+            Path((SESSION.to_string(), GUILD_SYNC)),
+            Query(HashMap::new()),
+            JsonBody(update),
+        )
+        .await
+        .expect_err("a non-numeric channel id must be rejected");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.message,
+            "token, endpoint, sessionId and channelId must be provided in voice state"
+        );
+    }
+
+    // A slow enough source keeps the player holding a track for the duration of the PATCH.
+    struct StubTrack(player::AudioTrackInfo);
+
+    impl player::AudioTrack for StubTrack {
+        fn info(&self) -> &player::AudioTrackInfo {
+            &self.0
+        }
+
+        fn source_name(&self) -> &str {
+            "test"
+        }
+
+        fn open_stream(&self) -> player::Result<player::track::TrackStream> {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            Err(player::FriendlyException::fault("stub track"))
+        }
+
+        fn clone_track(&self) -> Box<dyn player::AudioTrack> {
+            Box::new(StubTrack(self.0.clone()))
+        }
+    }
+
+    // `noReplace` vetoes only the track, so a PATCH that also carries voice still has to connect
+    // it. Returning before the voice block left the guild on the old channel.
+    #[tokio::test]
+    async fn no_replace_still_connects_voice() {
+        let (state, _rx) = patched_state().await;
+        let context = state.sockets().get(SESSION).unwrap();
+        let player = context.get_or_create_player(GUILD_SYNC);
+        let info = player::AudioTrackInfo::builder("stub")
+            .title("Stub")
+            .build();
+        let proto = Track::new(
+            String::new(),
+            crate::protocol::track::TrackInfo::from_engine(&info, "test", 0),
+        );
+        player.play_at(Box::new(StubTrack(info)), proto, 0);
+        assert!(player.has_track(), "the player must hold a track to veto");
+
+        let update = PlayerUpdate {
+            voice: Omissible::Present(refused_voice()),
+            track: Omissible::Present(crate::protocol::player::PlayerUpdateTrack {
+                identifier: Omissible::Present("replacement".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = patch_player(
+            State(state),
+            Path((SESSION.to_string(), GUILD_SYNC)),
+            Query(HashMap::from([(
+                "noReplace".to_string(),
+                "true".to_string(),
+            )])),
+            JsonBody(update),
+        )
+        .await;
+
+        let err = result.expect_err("voice connects before the noReplace veto");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(player.has_track(), "the track must be left unchanged");
+    }
+
+    // Voice connects inline on PATCH, surfacing handshake failure as 500.
     #[tokio::test]
     async fn patch_voice_returns_handshake_error() {
         let (state, _rx) = patched_state().await;
@@ -417,5 +505,38 @@ mod tests {
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         // Nothing was stored, so a retrying PATCH still wants this target.
         assert!(player_of(&state, GUILD_SYNC).voice_reconnect(&refused_voice()));
+    }
+
+    // A parked session still answers REST: the client reconnecting mid-resume must not see 404.
+    #[tokio::test]
+    async fn parked_session_is_reachable_over_rest() {
+        let (state, _rx) = patched_state().await;
+        state
+            .sockets()
+            .move_to_resumable(SESSION)
+            .expect("session is parked");
+        assert!(state.sockets().get(SESSION).is_none());
+
+        let listed = get_players(State(state.clone()), Path(SESSION.to_string()))
+            .await
+            .expect("a parked session is listable");
+        assert!(listed.0.is_empty());
+
+        let updated = patch_player(
+            State(state.clone()),
+            Path((SESSION.to_string(), GUILD_SYNC)),
+            Query(HashMap::new()),
+            JsonBody(PlayerUpdate {
+                volume: Omissible::Present(42),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("a parked session accepts a PATCH");
+        assert_eq!(updated.0.volume, 42);
+
+        // Looking a session up must not move it back to the live set.
+        assert!(state.sockets().get(SESSION).is_none());
+        assert!(state.sockets().get_any(SESSION).is_some());
     }
 }

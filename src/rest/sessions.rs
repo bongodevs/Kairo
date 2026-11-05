@@ -7,16 +7,17 @@ use crate::node::AppState;
 use crate::protocol::omissible::Omissible;
 use crate::protocol::session::{Session, SessionUpdate};
 use crate::rest::error::{RestError, RestResult};
+use crate::rest::json::JsonBody;
 
 /// `PATCH /v4/sessions/{sessionId}`, turn resuming on or off and set the resume timeout.
 pub async fn patch_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-    Json(update): Json<SessionUpdate>,
+    JsonBody(update): JsonBody<SessionUpdate>,
 ) -> RestResult<Json<Session>> {
     let context = state
         .sockets()
-        .get(&session_id)
+        .get_any(&session_id)
         .ok_or_else(|| RestError::not_found(format!("Session {session_id} not found")))?;
 
     if let Omissible::Present(resuming) = update.resuming {

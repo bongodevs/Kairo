@@ -1,4 +1,9 @@
+use std::time::{Duration, Instant};
+
 use super::*;
+
+/// Total budget for both SponsorBlock calls, however the time is split between them.
+const SPONSORBLOCK_DEADLINE: Duration = Duration::from_secs(10);
 
 impl PlayerShared {
     pub(super) fn handle_sponsorblock(
@@ -12,36 +17,64 @@ impl PlayerShared {
     ) {
         use player::tools::http::HttpInterface;
 
-        let http = HttpInterface::new();
-
+        // One budget for both calls: a slow segments lookup leaves less time for chapters rather
+        // than giving each its own full timeout.
+        let deadline = Instant::now() + SPONSORBLOCK_DEADLINE;
+        let http = HttpInterface::new().with_timeout(SPONSORBLOCK_DEADLINE);
         let segments = sponsorblock::retrieve_video_segments(&http, &video_id, &categories);
-        if let Some(ctx) = context_weak.upgrade() {
-            if !segments.is_empty() {
-                ctx.send_message(Message::event(EmittedEvent::SegmentsLoaded {
-                    guild_id: guild_id_str.clone(),
-                    segments: segments.clone(),
-                }));
-            }
-        }
+        let chapters = match deadline.checked_duration_since(Instant::now()) {
+            Some(left) if !left.is_zero() => sponsorblock::retrieve_video_chapters(
+                &HttpInterface::new().with_timeout(left),
+                &video_id,
+                track_duration_ms,
+            ),
+            _ => Vec::new(),
+        };
 
-        let chapters = sponsorblock::retrieve_video_chapters(&http, &video_id, track_duration_ms);
-        if let Some(ctx) = context_weak.upgrade() {
-            if !chapters.is_empty() {
-                ctx.send_message(Message::event(EmittedEvent::ChaptersLoaded {
-                    guild_id: guild_id_str.clone(),
-                    chapters: chapters.clone(),
-                }));
-            }
+        let mut markables: Vec<TrackMarkable> = Vec::with_capacity(segments.len() + chapters.len());
+        for s in &segments {
+            markables.push(TrackMarkable::Segment(s.clone()));
         }
-
-        let mut markables: Vec<TrackMarkable> = Vec::new();
-        for s in segments {
-            markables.push(TrackMarkable::Segment(s));
-        }
-        for c in chapters {
-            markables.push(TrackMarkable::Chapter(c));
+        for c in &chapters {
+            markables.push(TrackMarkable::Chapter(c.clone()));
         }
         markables.sort_by_key(|m| m.start());
+        let markables = Arc::new(markables);
+
+        let Some(ctx) = context_weak.upgrade() else {
+            return;
+        };
+
+        // Cache even an empty answer: this video has no markers for this category set, so a replay
+        // does not need the network again.
+        ctx.cache_sponsorblock_markables(&video_id, &categories, Arc::clone(&markables));
+
+        // A track change while the lookup ran makes the result stale for this player. The cached
+        // copy above is still valid for a later replay of the same video. The session slot is the
+        // authority here: a crossfade successor is already current when its `TrackStart` fires, but
+        // is not the engine's active executor until the overlap ends.
+        let current = ctx
+            .get_player(guild_id)
+            .and_then(|player| player.current_track());
+        if current
+            .as_ref()
+            .is_none_or(|track| track.info.identifier != video_id)
+        {
+            return;
+        }
+
+        if !segments.is_empty() {
+            ctx.send_message(Message::event(EmittedEvent::SegmentsLoaded {
+                guild_id: guild_id_str.clone(),
+                segments: segments.clone(),
+            }));
+        }
+        if !chapters.is_empty() {
+            ctx.send_message(Message::event(EmittedEvent::ChaptersLoaded {
+                guild_id: guild_id_str.clone(),
+                chapters: chapters.clone(),
+            }));
+        }
 
         if markables.is_empty() {
             return;
@@ -53,7 +86,6 @@ impl PlayerShared {
             "arming sponsorblock markers"
         );
 
-        let markables = Arc::new(markables);
         Self::set_sponsorblock_marker(&player_weak, &context_weak, guild_id_str, &markables, 0);
     }
 

@@ -1,14 +1,15 @@
 use super::*;
+use crate::utils::locked;
 
 impl LavalinkPlayer {
     pub(super) fn clear_scheduled_transition_marker(&self) {
-        if let Some(id) = self.transition_marker.lock().unwrap().take() {
+        if let Some(id) = locked(&self.transition_marker).take() {
             self.player.remove_marker(id);
         }
     }
 
     pub(super) fn clear_manual_transition_marker(&self) {
-        if let Some(id) = self.manual_transition_marker.lock().unwrap().take() {
+        if let Some(id) = locked(&self.manual_transition_marker).take() {
             self.player.remove_marker(id);
         }
     }
@@ -19,7 +20,7 @@ impl LavalinkPlayer {
     }
 
     pub(super) fn effective_transition(&self) -> Option<CrossfadeOptions> {
-        let mut options = (*self.crossfade.lock().unwrap())?;
+        let mut options = (*locked(&self.crossfade))?;
         let info = self.player.playing_track()?;
 
         let fade_is_applicable = options.duration_ms > 0
@@ -39,7 +40,13 @@ impl LavalinkPlayer {
     // Arm the transition marker for the current base, or immediately pre-buffer an unknown-length
     // gapless successor. A pending engine transition must first promote before another is armed.
     pub(super) fn arm_transition(&self) {
-        if self.player.has_pending_next() || self.next_track.lock().unwrap().is_none() {
+        eprintln!(
+            "arm_transition: pending={} next_some={}",
+            self.player.has_pending_next(),
+            locked(&self.next_track).is_some()
+        );
+        if self.player.has_pending_next() || locked(&self.next_track).is_none() {
+            eprintln!("arm_transition: early return");
             return;
         }
         let Some(info) = self.player.playing_track() else {
@@ -51,8 +58,10 @@ impl LavalinkPlayer {
             return;
         }
         let Some(options) = self.effective_transition() else {
+            eprintln!("arm_transition: no effective transition");
             return;
         };
+        eprintln!("arm_transition: options={options:?} info.length={}", info.length);
 
         if options.is_gapless() && !info.has_known_duration() {
             self.begin_transition(options, false);
@@ -67,6 +76,7 @@ impl LavalinkPlayer {
         let context = self.shared.context.clone();
         let guild_id = self.guild_id;
         let handler: player::track::marker::TrackMarkerHandler = Box::new(move |state| {
+            eprintln!("arm_transition marker fired: {state:?}");
             if !matches!(
                 state,
                 MarkerState::Reached | MarkerState::Late | MarkerState::Bypassed
@@ -82,9 +92,10 @@ impl LavalinkPlayer {
                 }
             }
         });
+        eprintln!("arm_transition: installing marker at timecode {timecode}");
         let marker = TrackMarker::new(timecode, handler);
         let id = marker.id();
-        *self.transition_marker.lock().unwrap() = Some(id);
+        *locked(&self.transition_marker) = Some(id);
         self.player.add_marker(marker);
     }
 
@@ -92,15 +103,15 @@ impl LavalinkPlayer {
         if marker_fired {
             // The tracker removed this marker before invoking us. Taking only the stored id avoids
             // recursively locking the tracker from inside its own callback.
-            self.transition_marker.lock().unwrap().take();
+            locked(&self.transition_marker).take();
         } else {
             self.clear_scheduled_transition_marker();
         }
-        let Some((track, proto)) = self.next_track.lock().unwrap().take() else {
+        let Some((track, proto)) = locked(&self.next_track).take() else {
             return;
         };
         if self.shared.begin_transition(proto.clone()).is_none() {
-            *self.next_track.lock().unwrap() = Some((track, proto));
+            *locked(&self.next_track) = Some((track, proto));
             return;
         }
         if !self.player.prepare_next(track, options, 0) {
@@ -115,7 +126,7 @@ impl LavalinkPlayer {
             return self.player.promote_pending_now();
         }
 
-        let Some(mut options) = *self.crossfade.lock().unwrap() else {
+        let Some(mut options) = *locked(&self.crossfade) else {
             return false;
         };
         if options.duration_ms > 0 {
@@ -143,7 +154,7 @@ impl LavalinkPlayer {
                 .upgrade()
                 .and_then(|context| context.get_player(guild_id))
             {
-                player.manual_transition_marker.lock().unwrap().take();
+                locked(&player.manual_transition_marker).take();
                 player.player.promote_pending_now();
             }
         });
@@ -152,7 +163,7 @@ impl LavalinkPlayer {
             self.player.promote_pending_now();
             return true;
         };
-        *self.manual_transition_marker.lock().unwrap() = Some(id);
+        *locked(&self.manual_transition_marker) = Some(id);
         true
     }
 }

@@ -1,131 +1,241 @@
-//! The socket's write half: drains the outbound channel to the client.
+//! The socket owner: drains the outbound channel, answers pings, and notices a close.
+
+use std::collections::VecDeque;
+use std::future::{poll_fn, Future};
+use std::pin::Pin;
+use std::task::Poll;
+use std::time::Duration;
 
 use axum::extract::ws::Message as WsMessage;
-use futures_util::Sink;
-use futures_util::SinkExt;
+use futures_util::{Sink, Stream};
 use tokio::sync::mpsc;
+use tokio::time::{sleep, Sleep};
 
 use crate::protocol::message::Message;
 
-// Flush the resume `backlog` in order, then stream live messages until the channel closes; a slow
-// socket waits in the channel, it is never timed out.
-pub(super) async fn write_loop<S>(
-    mut sink: S,
-    mut receiver: mpsc::UnboundedReceiver<Message>,
+use super::Ended;
+
+// A write that makes no progress for this long closes the socket instead of buffering forever.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+// One task owns the whole socket. Every loop polls the inbound half first, so a stalled write
+// cannot stop a ping from being seen, and a pong is queued ahead of the remaining backlog.
+pub(super) async fn pump<S, E>(
+    mut socket: S,
+    mut receiver: mpsc::Receiver<Message>,
     backlog: Vec<Message>,
     session_id: String,
-) where
-    S: Sink<WsMessage> + Unpin,
+) -> Ended
+where
+    S: Stream<Item = Result<WsMessage, E>> + Sink<WsMessage, Error = E> + Unpin,
 {
-    for message in backlog {
-        if !send_text(&mut sink, &message).await {
-            tracing::warn!(session = %session_id, "websocket write failed, closing the socket");
-            return;
-        }
-    }
+    let mut queued: VecDeque<WsMessage> = backlog.iter().filter_map(encode).collect();
+    let mut pending: Option<WsMessage> = None;
+    let mut write_deadline: Option<Pin<Box<Sleep>>> = None;
+    let mut flush = false;
+    let mut live = true;
 
-    while let Some(message) = receiver.recv().await {
-        if !send_text(&mut sink, &message).await {
-            tracing::warn!(session = %session_id, "websocket write failed, closing the socket");
-            return;
+    poll_fn(|cx| loop {
+        let mut progressed = false;
+
+        // Read first: a write waiting on the socket must never hide a ping or a close.
+        loop {
+            match Pin::new(&mut socket).poll_next(cx) {
+                Poll::Ready(Some(Ok(frame))) => {
+                    progressed = true;
+                    match frame {
+                        WsMessage::Close(_) => return Poll::Ready(Ended::Read),
+                        WsMessage::Ping(_) => {
+                            // Tungstenite queues the pong; the read path flushes it ahead of
+                            // the application backlog, so only a flush is requested here.
+                            flush = true;
+                        }
+                        WsMessage::Text(_) => tracing::warn!(
+                            session = %session_id,
+                            "Kairo does not support websocket messages. Please use the REST api."
+                        ),
+                        WsMessage::Pong(_) | WsMessage::Binary(_) => {}
+                    }
+                }
+                Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
+                    return Poll::Ready(Ended::Read)
+                }
+                Poll::Pending => break,
+            }
         }
-    }
-    tracing::debug!(session = %session_id, "websocket outbound channel closed");
+
+        if pending.is_none() {
+            pending = queued.pop_front();
+        }
+        if pending.is_none() && live {
+            match receiver.poll_recv(cx) {
+                Poll::Ready(Some(message)) => {
+                    if let Some(frame) = encode(&message) {
+                        queued.push_back(frame);
+                    }
+                    progressed = true;
+                }
+                Poll::Ready(None) => live = false,
+                Poll::Pending => {}
+            }
+            pending = queued.pop_front();
+        }
+
+        if let Some(frame) = pending.take() {
+            match Pin::new(&mut socket).poll_ready(cx) {
+                Poll::Ready(Ok(())) => {
+                    if Pin::new(&mut socket).start_send(frame).is_err() {
+                        tracing::warn!(session = %session_id, "websocket write failed, closing the socket");
+                        return Poll::Ready(Ended::Write);
+                    }
+                    flush = true;
+                    progressed = true;
+                }
+                Poll::Ready(Err(_)) => {
+                    tracing::warn!(session = %session_id, "websocket write failed, closing the socket");
+                    return Poll::Ready(Ended::Write);
+                }
+                Poll::Pending => pending = Some(frame),
+            }
+        }
+
+        if flush {
+            match Pin::new(&mut socket).poll_flush(cx) {
+                Poll::Ready(Ok(())) => {
+                    flush = false;
+                    // Bytes reached the socket, so this is progress even if more are queued.
+                    write_deadline = None;
+                    progressed = true;
+                }
+                Poll::Ready(Err(_)) => {
+                    tracing::warn!(session = %session_id, "websocket write failed, closing the socket");
+                    return Poll::Ready(Ended::Write);
+                }
+                Poll::Pending => {}
+            }
+        }
+
+        if pending.is_some() || flush {
+            let deadline =
+                write_deadline.get_or_insert_with(|| Box::pin(sleep(WRITE_TIMEOUT)));
+            if deadline.as_mut().poll(cx).is_ready() {
+                tracing::warn!(
+                    session = %session_id,
+                    "websocket write timed out, closing the socket"
+                );
+                return Poll::Ready(Ended::Write);
+            }
+        } else {
+            write_deadline = None;
+        }
+
+        if !live && pending.is_none() && queued.is_empty() && !flush {
+            return Poll::Ready(Ended::Write);
+        }
+        if !progressed {
+            return Poll::Pending;
+        }
+    })
+    .await
 }
 
-async fn send_text<S>(sink: &mut S, message: &Message) -> bool
-where
-    S: Sink<WsMessage> + Unpin,
-{
-    let Ok(text) = serde_json::to_string(message) else {
-        return true; // skip an unserializable message, keep the socket
-    };
-    sink.send(WsMessage::Text(text.into())).await.is_ok()
+fn encode(message: &Message) -> Option<WsMessage> {
+    serde_json::to_string(message)
+        .ok()
+        .map(|text| WsMessage::Text(text.into()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::convert::Infallible;
-    use std::pin::Pin;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use std::task::{Context, Poll, Waker};
+    use std::task::{Context, Waker};
     use std::time::Duration;
 
-    /// A sink that records everything written, standing in for the socket.
     #[derive(Clone, Default)]
-    struct RecordingSink {
-        sent: Arc<Mutex<Vec<WsMessage>>>,
+    struct FakeSocket(Arc<FakeInner>);
+
+    #[derive(Default)]
+    struct FakeInner {
+        inbound: Mutex<VecDeque<Result<WsMessage, Infallible>>>,
+        sent: Mutex<Vec<WsMessage>>,
+        read_polls: AtomicUsize,
+        flushes: AtomicUsize,
+        blocked: AtomicBool,
+        read_waker: Mutex<Option<Waker>>,
+        write_waker: Mutex<Option<Waker>>,
     }
 
-    impl Sink<WsMessage> for RecordingSink {
-        type Error = Infallible;
-
-        fn poll_ready(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
+    impl FakeSocket {
+        fn block(&self) {
+            self.0.blocked.store(true, Ordering::SeqCst);
         }
 
-        fn start_send(self: Pin<&mut Self>, item: WsMessage) -> Result<(), Self::Error> {
-            self.sent.lock().unwrap().push(item);
-            Ok(())
-        }
-
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn poll_close(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    /// A sink that refuses writes until its gate opens, standing in for a stalled TCP window.
-    #[derive(Clone, Default)]
-    struct StallingSink {
-        sent: Arc<Mutex<Vec<WsMessage>>>,
-        open: Arc<AtomicBool>,
-        waker: Arc<Mutex<Option<Waker>>>,
-    }
-
-    impl StallingSink {
-        fn open(&self) {
-            self.open.store(true, Ordering::SeqCst);
-            if let Some(waker) = self.waker.lock().unwrap().take() {
+        fn unblock(&self) {
+            self.0.blocked.store(false, Ordering::SeqCst);
+            if let Some(waker) = self.0.write_waker.lock().unwrap().take() {
                 waker.wake();
             }
         }
+
+        fn push(&self, frame: WsMessage) {
+            self.0.inbound.lock().unwrap().push_back(Ok(frame));
+            if let Some(waker) = self.0.read_waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+
+        fn sent(&self) -> Vec<WsMessage> {
+            self.0.sent.lock().unwrap().clone()
+        }
+
+        fn read_polls(&self) -> usize {
+            self.0.read_polls.load(Ordering::SeqCst)
+        }
+
+        fn flushes(&self) -> usize {
+            self.0.flushes.load(Ordering::SeqCst)
+        }
     }
 
-    impl Sink<WsMessage> for StallingSink {
+    impl Stream for FakeSocket {
+        type Item = Result<WsMessage, Infallible>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let inner = &self.0;
+            inner.read_polls.fetch_add(1, Ordering::SeqCst);
+            if let Some(frame) = inner.inbound.lock().unwrap().pop_front() {
+                return Poll::Ready(Some(frame));
+            }
+            *inner.read_waker.lock().unwrap() = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+
+    impl Sink<WsMessage> for FakeSocket {
         type Error = Infallible;
 
         fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            if self.open.load(Ordering::SeqCst) {
-                return Poll::Ready(Ok(()));
+            if self.0.blocked.load(Ordering::SeqCst) {
+                *self.0.write_waker.lock().unwrap() = Some(cx.waker().clone());
+                return Poll::Pending;
             }
-            *self.waker.lock().unwrap() = Some(cx.waker().clone());
-            Poll::Pending
+            Poll::Ready(Ok(()))
         }
 
         fn start_send(self: Pin<&mut Self>, item: WsMessage) -> Result<(), Self::Error> {
-            self.sent.lock().unwrap().push(item);
+            self.0.sent.lock().unwrap().push(item);
             Ok(())
         }
 
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.0.flushes.fetch_add(1, Ordering::SeqCst);
+            if self.0.blocked.load(Ordering::SeqCst) {
+                *self.0.write_waker.lock().unwrap() = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
             Poll::Ready(Ok(()))
         }
 
@@ -137,66 +247,142 @@ mod tests {
         }
     }
 
-    fn ready(session_id: &str) -> Message {
+    fn message(session_id: &str) -> Message {
         Message::Ready {
             resumed: false,
             session_id: session_id.to_string(),
         }
     }
 
-    fn sent_ids(sent: &Arc<Mutex<Vec<WsMessage>>>) -> Vec<String> {
-        sent.lock()
-            .unwrap()
-            .iter()
-            .map(|message| match message {
-                WsMessage::Text(text) => {
-                    let value: serde_json::Value = serde_json::from_str(text).unwrap();
-                    value["sessionId"].as_str().unwrap().to_string()
-                }
-                other => panic!("unexpected frame: {other:?}"),
-            })
-            .collect()
+    fn session_of(frame: &WsMessage) -> Option<String> {
+        let WsMessage::Text(text) = frame else {
+            return None;
+        };
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        Some(value["sessionId"].as_str().unwrap().to_string())
+    }
+
+    async fn wait_for(mut check: impl FnMut() -> bool) {
+        for _ in 0..500 {
+            if check() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        panic!("condition was not reached");
     }
 
     #[tokio::test]
     async fn backlog_flushes_before_live_messages() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let sink = RecordingSink::default();
-        let sent = sink.sent.clone();
+        let (tx, rx) = mpsc::channel(8);
+        let socket = FakeSocket::default();
+        let probe = socket.clone();
 
-        tx.send(ready("live")).unwrap();
+        tx.send(message("live")).await.unwrap();
         drop(tx);
 
-        write_loop(sink, rx, vec![ready("one"), ready("two")], "s".to_string()).await;
+        let ended = pump(
+            socket,
+            rx,
+            vec![message("one"), message("two")],
+            "s".to_string(),
+        )
+        .await;
 
-        assert_eq!(sent_ids(&sent), ["one", "two", "live"]);
+        assert!(matches!(ended, Ended::Write));
+        let ids: Vec<_> = probe.sent().iter().filter_map(session_of).collect();
+        assert_eq!(ids, ["one", "two", "live"]);
     }
 
-    // A stalled socket must be waited on, not timed out: the message still arrives on release.
-    #[tokio::test(start_paused = true)]
-    async fn a_stalled_socket_is_waited_on_not_timed_out() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let sink = StallingSink::default();
-        let sent = sink.sent.clone();
-        let gate = sink.clone();
+    // A write waiting on the socket must not stop the read half from being polled.
+    #[tokio::test]
+    async fn a_ping_is_read_while_a_write_is_pending() {
+        // Kept alive so the channel stays open while the write is blocked.
+        let (_tx, rx) = mpsc::channel(8);
+        let socket = FakeSocket::default();
+        let probe = socket.clone();
+        socket.block();
 
-        let write = tokio::spawn(write_loop(sink, rx, Vec::new(), "s".to_string()));
-        tx.send(ready("queued")).unwrap();
-        drop(tx);
+        let task = tokio::spawn(pump(
+            socket,
+            rx,
+            vec![message("one"), message("two")],
+            "s".to_string(),
+        ));
 
-        // Let the writer reach the stalled sink, then idle far past any send deadline.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        tokio::time::sleep(Duration::from_secs(31)).await;
+        // Wait until the first backlog message is waiting on the stalled sink.
+        wait_for(|| probe.read_polls() > 0).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(probe.sent().is_empty(), "writes are stalled");
+
+        let polls_before = probe.read_polls();
+        let flushes_before = probe.flushes();
+        probe.push(WsMessage::Ping(vec![7].into()));
+        wait_for(|| probe.read_polls() > polls_before).await;
+        wait_for(|| probe.flushes() > flushes_before).await;
         assert!(
-            !write.is_finished(),
-            "a slow socket must be waited on, not cut off"
+            !task.is_finished(),
+            "the blocked write must not kill the socket"
         );
 
-        gate.open();
-        tokio::time::timeout(Duration::from_secs(1), write)
-            .await
-            .expect("the writer must deliver once the socket drains")
-            .unwrap();
-        assert_eq!(sent_ids(&sent), ["queued"]);
+        probe.unblock();
+        wait_for(|| probe.sent().len() >= 2).await;
+        task.abort();
+
+        let ids: Vec<_> = probe.sent().iter().filter_map(session_of).collect();
+        assert_eq!(ids, ["one", "two"]);
+    }
+
+    #[tokio::test]
+    async fn a_closed_stream_ends_the_pump_even_with_a_pending_write() {
+        let (_tx, rx) = mpsc::channel(8);
+        let socket = FakeSocket::default();
+        socket.block();
+        socket.push(WsMessage::Close(None));
+
+        let ended = tokio::time::timeout(
+            Duration::from_secs(1),
+            pump(socket, rx, vec![message("one")], "s".to_string()),
+        )
+        .await
+        .expect("a close must not wait for a blocked write");
+        assert!(matches!(ended, Ended::Read));
+    }
+
+    #[tokio::test]
+    async fn a_closed_channel_ends_the_pump() {
+        let (tx, rx) = mpsc::channel(8);
+        drop(tx);
+        let socket = FakeSocket::default();
+
+        let ended = tokio::time::timeout(
+            Duration::from_secs(1),
+            pump(socket, rx, Vec::new(), "s".to_string()),
+        )
+        .await
+        .expect("a closed channel ends the socket");
+        assert!(matches!(ended, Ended::Write));
+    }
+
+    // A write that never completes must close the socket instead of buffering forever.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_write_times_out() {
+        let (_tx, rx) = mpsc::channel(8);
+        let socket = FakeSocket::default();
+        socket.block();
+
+        let task = tokio::spawn(pump(socket, rx, vec![message("one")], "s".to_string()));
+        tokio::task::yield_now().await;
+        tokio::time::advance(WRITE_TIMEOUT + Duration::from_millis(1)).await;
+
+        for _ in 0..100 {
+            if task.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(task.is_finished(), "a stalled write must hit the deadline");
+        let ended = task.await.unwrap();
+        assert!(matches!(ended, Ended::Write));
     }
 }

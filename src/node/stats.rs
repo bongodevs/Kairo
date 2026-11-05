@@ -1,13 +1,12 @@
 //! The node's own resource usage, as reported by `/v4/stats` and the periodic stats event.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use perf_monitor::cpu::ProcessStat;
 
-use crate::protocol::stats::{Cpu, FrameStats, Memory};
-use crate::session::loss_counter::EXPECTED_PACKET_COUNT_PER_MIN;
-use crate::session::SocketContext;
+use crate::protocol::stats::{Cpu, Memory};
+use crate::utils::locked;
 
 // Sampling costs a syscall per call and clients ask for stats far more often than the numbers move.
 const CPU_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -41,10 +40,7 @@ fn resident_memory() -> u64 {
         .unwrap_or(0)
 }
 
-// What the allocator holds committed from the OS.
-//
-// Not the address space: mimalloc reserves arenas a gibibyte at a time and never unmaps them, so the
-// virtual size ratchets up with peak concurrency and says nothing about memory in use.
+// Sample allocator committed memory from the OS rather than virtual address space.
 fn committed_memory() -> u64 {
     let mut fields = [0usize; 8];
     let [elapsed, user, system, rss, peak_rss, commit, peak_commit, faults] = &mut fields;
@@ -190,7 +186,7 @@ pub fn fd_limit() -> Option<u64> {
 
 /// Host and process CPU load, resampled at most once per refresh interval.
 pub fn cpu() -> Cpu {
-    let mut guard = CPU.lock().unwrap();
+    let mut guard = locked(&CPU);
     let state = guard.get_or_insert_with(CpuState::new);
     if state.refreshed.elapsed() >= CPU_REFRESH_INTERVAL {
         state.refresh();
@@ -198,39 +194,11 @@ pub fn cpu() -> Cpu {
     state.cached
 }
 
-/// Frame stats averaged over a session's playing players, or `None` when none has a usable window.
-pub fn aggregate_frame_stats(context: &Arc<SocketContext>) -> Option<FrameStats> {
-    let mut players: i64 = 0;
-    let mut sent: i64 = 0;
-    let mut nulled: i64 = 0;
-    for player in context.players() {
-        if !player.is_playing() || !player.loss_counter().is_data_usable() {
-            continue;
-        }
-        let (success, loss) = player.loss_counter().last_minute();
-        players += 1;
-        sent += success;
-        nulled += loss;
-    }
-
-    if players == 0 {
-        return None;
-    }
-    let deficit = players * EXPECTED_PACKET_COUNT_PER_MIN - (sent + nulled);
-    Some(FrameStats {
-        sent: (sent / players) as i32,
-        nulled: (nulled / players) as i32,
-        deficit: (deficit / players) as i32,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // The commit the allocator reports has to be real memory, not the reserved address space: the
-    // arenas alone are gibibytes wide, so anything near the virtual size means `memory` went back to
-    // reporting it.
+    // Assert committed memory reflects physical commit rather than reserved arena space.
     #[test]
     fn memory_reports_commit_rather_than_address_space() {
         let memory = memory();

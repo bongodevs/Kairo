@@ -13,6 +13,10 @@ pub struct Stats {
     pub players: i32,
     /// Number of players actively playing a track.
     pub playing_players: i32,
+    /// Loader slots currently in use.
+    pub loader_running: usize,
+    /// Loads rejected because no loader slot freed up within the wait timeout.
+    pub loader_timed_out: u64,
     /// Node uptime in milliseconds.
     pub uptime: i64,
     /// Memory statistics.

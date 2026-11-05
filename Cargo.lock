@@ -1410,12 +1410,13 @@ dependencies = [
 
 [[package]]
 name = "kairo"
-version = "4.8.6"
+version = "4.8.7"
 dependencies = [
  "axum",
  "bytes",
  "chrono",
  "futures-util",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "libc",
@@ -1433,6 +1434,7 @@ dependencies = [
  "sources",
  "tokio",
  "toml",
+ "tower",
  "tower-service",
  "tracing",
  "tracing-appender",
@@ -2114,8 +2116,8 @@ dependencies = [
 
 [[package]]
 name = "player"
-version = "0.1.13"
-source = "git+https://github.com/bongodevs/player?tag=v0.1.13#c86200ae5af72c67d15411607ba951c7ce41290d"
+version = "0.1.14"
+source = "git+https://github.com/bongodevs/player?rev=37fb92dcbe189a04f131eff133574a40d9eeae39#37fb92dcbe189a04f131eff133574a40d9eeae39"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -2850,8 +2852,8 @@ dependencies = [
 
 [[package]]
 name = "sources"
-version = "0.1.32"
-source = "git+https://github.com/bongodevs/sources?tag=v0.1.32#c97372c89435d3313af392134dbd3c66e7c0231d"
+version = "0.1.33"
+source = "git+https://github.com/bongodevs/sources?rev=c479a4e62904ba20f888fb92680ba7de4962d6e6#c479a4e62904ba20f888fb92680ba7de4962d6e6"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -3638,7 +3640,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "voice"
 version = "0.1.11"
-source = "git+https://github.com/bongodevs/voice?tag=v0.1.11#6ea0f12dfd7896d0e0432014a805742b25caa3cc"
+source = "git+https://github.com/bongodevs/voice?rev=5210ca70c28388bec04900c39e5a21e4b83b39ea#5210ca70c28388bec04900c39e5a21e4b83b39ea"
 dependencies = [
  "aes-gcm",
  "bytes",
@@ -3649,6 +3651,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

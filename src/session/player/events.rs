@@ -1,4 +1,10 @@
 use super::*;
+use crate::utils::locked;
+
+// SponsorBlock lookups are best-effort and network-bound. One permit keeps them from occupying more
+// than one shared blocking slot when a guild races through tracks or the endpoint stops responding.
+static SPONSORBLOCK_PERMIT: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 
 impl AudioEventListener for PlayerShared {
     fn on_event(&self, event: &AudioEvent) {
@@ -61,18 +67,41 @@ impl AudioEventListener for PlayerShared {
                         let gid = self.guild_id;
                         let gid_str = guild_id.clone();
 
-                        // Onto the runtime's bounded blocking pool: a detached thread per TrackStart
-                        // is unbounded and untracked.
-                        self.runtime.spawn_blocking(move || {
-                            Self::handle_sponsorblock(
-                                player_weak,
-                                context_weak,
-                                gid,
-                                gid_str,
-                                video_id,
-                                track_duration,
-                                categories,
-                            );
+                        // Arming runs on the runtime and the fetch on the blocking pool, never on
+                        // the decode thread that is delivering this event.
+                        self.runtime.spawn(async move {
+                            let Some(context) = context_weak.upgrade() else {
+                                return;
+                            };
+                            if let Some(markables) =
+                                context.get_sponsorblock_markables(&video_id, &categories)
+                            {
+                                Self::set_sponsorblock_marker(
+                                    &player_weak,
+                                    &context_weak,
+                                    gid_str,
+                                    &markables,
+                                    0,
+                                );
+                                return;
+                            }
+                            drop(context);
+
+                            // Serialise lookups: a wedged SponsorBlock endpoint must not occupy
+                            // every shared blocking slot that loads and MLS keygen need.
+                            let _permit = SPONSORBLOCK_PERMIT.acquire().await;
+                            let _ = tokio::task::spawn_blocking(move || {
+                                Self::handle_sponsorblock(
+                                    player_weak,
+                                    context_weak,
+                                    gid,
+                                    gid_str,
+                                    video_id,
+                                    track_duration,
+                                    categories,
+                                );
+                            })
+                            .await;
                         });
                     }
                 }
@@ -85,9 +114,9 @@ impl AudioEventListener for PlayerShared {
                     EngineEndReason::Crossfade | EngineEndReason::Gapless
                 );
                 let track = if transition {
-                    let outgoing = self.transition_outgoing.lock().unwrap().take();
-                    if let Some(incoming) = self.transition_incoming.lock().unwrap().take() {
-                        let mut slots = self.tracks.lock().unwrap();
+                    let outgoing = locked(&self.transition_outgoing).take();
+                    if let Some(incoming) = locked(&self.transition_incoming).take() {
+                        let mut slots = locked(&self.tracks);
                         slots.previous = slots.current.take();
                         slots.current = Some(incoming);
                     }
@@ -157,9 +186,7 @@ impl AudioEventListener for PlayerShared {
                     .current_track()
                     .filter(|track| track.info.identifier == info.identifier)
                     .or_else(|| {
-                        self.transition_incoming
-                            .lock()
-                            .unwrap()
+                        locked(&self.transition_incoming)
                             .clone()
                             .filter(|track| track.info.identifier == info.identifier)
                     });
@@ -204,7 +231,7 @@ impl AudioEventListener for PlayerShared {
                 }
 
                 if let Some(player) = context.get_player(self.guild_id) {
-                    if let Some(id) = player.manual_transition_marker.lock().unwrap().take() {
+                    if let Some(id) = locked(&player.manual_transition_marker).take() {
                         player.player.remove_marker(id);
                     }
                     player.arm_transition();
@@ -224,5 +251,19 @@ impl AudioEventListener for PlayerShared {
             // Returned early above.
             AudioEvent::PlayerPause | AudioEvent::PlayerResume => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SPONSORBLOCK_PERMIT;
+
+    // A wedged endpoint must not be able to take a second shared blocking slot from a lookup queue.
+    #[tokio::test]
+    async fn sponsorblock_lookups_hold_one_permit_at_a_time() {
+        let permit = SPONSORBLOCK_PERMIT.acquire().await.expect("permit");
+        assert!(SPONSORBLOCK_PERMIT.try_acquire().is_err());
+        drop(permit);
+        assert!(SPONSORBLOCK_PERMIT.try_acquire().is_ok());
     }
 }

@@ -43,7 +43,7 @@ pub async fn check(logging: &LoggingConfig) {
 
     match upgrade_to(&current, &release.tag_name) {
         Some(latest) => announce(logging, &current, &latest),
-        None => tracing::debug!("Kairo is up to date (v{current})"),
+        None => tracing::debug!(version = %current, "Kairo is up to date"),
     }
 }
 

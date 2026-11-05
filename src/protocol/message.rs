@@ -9,9 +9,9 @@ use serde::Serialize;
 use crate::protocol::load_result::Exception;
 use crate::protocol::lyrics::{Line, Lyrics};
 use crate::protocol::player::PlayerState;
+use crate::protocol::sponsorblock::{Chapter, Segment};
 use crate::protocol::stats::{FrameStats, Stats};
 use crate::protocol::track::Track;
-use crate::sponsorblock::{Chapter, Segment};
 
 /// A message sent to a connected client over the WebSocket.
 #[derive(Debug, Clone, Serialize)]
@@ -52,6 +52,16 @@ pub enum Message {
 }
 
 impl Message {
+    /// The wire `op` name, for logs.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Message::Ready { .. } => "ready",
+            Message::PlayerUpdate { .. } => "playerUpdate",
+            Message::Stats { .. } => "stats",
+            Message::Event(_) => "event",
+        }
+    }
+
     /// Wrap an [`EmittedEvent`] as an `op: "event"` message.
     pub fn event(event: EmittedEvent) -> Self {
         Message::Event(Box::new(event))
@@ -236,6 +246,8 @@ mod tests {
             frame_stats,
             players: 1,
             playing_players: 1,
+            loader_running: 0,
+            loader_timed_out: 0,
             uptime: 1000,
             memory: Memory {
                 free: 1,
