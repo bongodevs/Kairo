@@ -2117,7 +2117,7 @@ dependencies = [
 [[package]]
 name = "player"
 version = "0.1.14"
-source = "git+https://github.com/bongodevs/player?rev=37fb92dcbe189a04f131eff133574a40d9eeae39#37fb92dcbe189a04f131eff133574a40d9eeae39"
+source = "git+https://github.com/bongodevs/player?branch=remote-yt#fee6c4bb9919851cc872049f948cf16b7d3c64ef"
 dependencies = [
  "aes",
  "base64 0.22.1",

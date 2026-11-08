@@ -26,11 +26,11 @@ tag = "v0.2.11"
 
 [dependencies.player]
 git = "https://github.com/bongodevs/player"
-rev = "37fb92dcbe189a04f131eff133574a40d9eeae39"
+branch = "remote-yt"
 
 [dependencies.sources]
 git = "https://github.com/bongodevs/sources"
-rev = "c479a4e62904ba20f888fb92680ba7de4962d6e6"
+branch = "remote-yt"
 
 [dependencies.voice]
 git = "https://github.com/bongodevs/voice"
