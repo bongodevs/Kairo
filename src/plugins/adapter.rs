@@ -54,9 +54,6 @@ impl TrackSource for PluginSource {
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         request.direct = mirror::depth() > 0;
-        if let Err(error) = self.health.gate() {
-            return Box::pin(async move { Err(error) });
-        }
         let slot = Arc::clone(&self.slot);
         let health = Arc::clone(&self.health);
         let http = self.http.clone();
@@ -146,14 +143,17 @@ where
     I: Serialize,
     O: DeserializeOwned,
 {
+    let permit = health.enter()?;
     match slot.call(method, request).await {
         Ok(result) => {
-            health.succeeded();
+            permit.succeeded();
             Ok(result)
         }
         Err(error) => {
             if error.counted() {
-                health.failed();
+                permit.failed();
+            } else {
+                permit.succeeded();
             }
             Err(call_error(source, error))
         }
@@ -211,9 +211,6 @@ impl Source for PluginSource {
         let identifier = reference.identifier().to_owned();
         if !self.claims.matches(&identifier) {
             return Box::pin(async { Ok(SourceResult::NotMine) });
-        }
-        if let Err(error) = self.health.gate() {
-            return Box::pin(async move { Err(error) });
         }
         let slot = Arc::clone(&self.slot);
         let health = Arc::clone(&self.health);

@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use player::source::{OpenedSource, SourceError, SourceMetadata, SourceReference, Sources};
 use player::track::UNKNOWN_AUTHOR;
 
+use super::health::is_busy;
 use crate::config::{FallbackPlaceholder, FallbackProvider};
 
 tokio::task_local! {
@@ -65,6 +66,7 @@ impl MirrorChain {
                     unknown.get_or_insert(name);
                     continue;
                 }
+                Err(error) if is_busy(&error) => continue,
                 Err(error) => return Err(error),
             };
             return Ok(opened
@@ -119,11 +121,13 @@ fn render(provider: &FallbackProvider, mirror: &MirrorSpec) -> Option<String> {
 mod tests {
     use std::io::Cursor;
 
+    use player::ExceptionSeverity;
     use player::decode::Millis;
     use player::source::{LoadFuture, OpenFuture, Source, SourceHints, SourceResult, TrackSource};
     use player::track::{Track, TrackInfo};
 
     use super::*;
+    use crate::plugins::health::BUSY_MESSAGE;
 
     struct InnerSource;
 
@@ -170,6 +174,28 @@ mod tests {
         }
     }
 
+    struct BusySource;
+
+    impl Source for BusySource {
+        fn name(&self) -> &str {
+            "busy"
+        }
+
+        fn load<'a>(&'a self, _: &'a SourceReference) -> LoadFuture<'a> {
+            Box::pin(async {
+                Err(SourceError::load_failed(BUSY_MESSAGE, ExceptionSeverity::Common))
+            })
+        }
+    }
+
+    impl TrackSource for BusySource {
+        fn open<'a>(&'a self, _: &'a Track) -> OpenFuture<'a> {
+            Box::pin(async {
+                Err(SourceError::load_failed(BUSY_MESSAGE, ExceptionSeverity::Common))
+            })
+        }
+    }
+
     fn provider(
         source: &str,
         template: &str,
@@ -205,6 +231,32 @@ mod tests {
         assert_eq!(opened.source_name(), "outer");
         assert_eq!(opened.reference().identifier(), "outer:1");
         assert_eq!(opened.metadata().title.as_deref(), Some("Outer"));
+    }
+
+    #[tokio::test]
+    async fn a_busy_provider_is_skipped_and_the_next_one_opens() {
+        let mut sources = Sources::new();
+        sources.register(BusySource).expect("busy source");
+        sources.register(InnerSource).expect("inner source");
+        let sources = Arc::new(sources);
+        let chain = MirrorChain::new(vec![
+            provider("busy", "busy:%QUERY%", FallbackPlaceholder::Query),
+            provider("inner", "inner:%QUERY%", FallbackPlaceholder::Query),
+        ]);
+        chain.install(&sources);
+
+        let opened = chain
+            .open(
+                "outer",
+                SourceReference::new("outer:1"),
+                SourceMetadata::default(),
+                &MirrorSpec { isrc: None, title: "Outer".into(), author: "Singer".into() },
+            )
+            .await
+            .expect("second provider opens");
+
+        assert_eq!(opened.source_name(), "outer");
+        assert_eq!(opened.reference().identifier(), "outer:1");
     }
 
     #[tokio::test]
