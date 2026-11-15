@@ -1,0 +1,10 @@
+edition = "2024"
+max_width = 100
+use_small_heuristics = "Max"
+newline_style = "Unix"
+use_field_init_shorthand = true
+reorder_imports = true
+reorder_modules = true
+merge_derives = true
+use_try_shorthand = true
+remove_nested_parens = true

@@ -1,0 +1,95 @@
+[package]
+name = "kairo"
+version.workspace = true
+edition.workspace = true
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/audio",
+    "crates/core",
+    "crates/player",
+    "crates/kairo-plugin-api",
+    "crates/voice",
+]
+# The bundled provider library is its own repository, checked out at crates/sources.
+exclude = ["crates/sources"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+abi_stable = { version = "0.11", default-features = false }
+async-ffi = { version = "0.5", features = ["abi_stable"] }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+anyhow = "1"
+axum = { version = "0.8", features = ["ws", "http2"] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+davey = "0.2"
+des = { version = "0.8", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+opus-rs = "=0.1.41"
+kairo-plugin-api = { path = "crates/kairo-plugin-api" }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "stream", "json"] }
+regex = { version = "1", default-features = false, features = ["std", "perf"] }
+rubato = { version = "=5.0.1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+semver = "1"
+sha2 = "0.10"
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+syom = { version = "=0.10.2", default-features = false }
+symphonia = { version = "=0.6.1", default-features = false, features = ["mkv", "ogg", "isomp4", "wav", "flac", "mpa", "vorbis", "aac", "pcm"] }
+thiserror = "2"
+wsola = { version = "0.3", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["chrono", "env-filter", "json"] }
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+getrandom = "0.3"
+kairo-core = { path = "crates/core" }
+player = { path = "crates/player" }
+kairo-plugin-api = { workspace = true, default-features = false, features = ["host"] }
+voice = { path = "crates/voice" }
+reqwest.workspace = true
+semver.workspace = true
+sha2.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+des.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
+voice = { path = "crates/voice", features = ["plaintext-gateway"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+
+[lints]
+workspace = true
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

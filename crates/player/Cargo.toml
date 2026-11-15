@@ -1,0 +1,33 @@
+[package]
+name = "player"
+version.workspace = true
+edition.workspace = true
+autotests = false
+
+[features]
+test-support = []
+
+[lints]
+workspace = true
+
+[dependencies]
+kairo-audio = { path = "../audio" }
+kairo-core = { path = "../core" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
+tokio-util = { version = "0.7.20", default-features = false, features = ["io-util"] }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+opus-rs.workspace = true
+sysinfo.workspace = true
+
+[[bench]]
+name = "frame_buffer"
+harness = false

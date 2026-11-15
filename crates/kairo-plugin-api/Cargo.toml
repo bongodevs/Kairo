@@ -1,0 +1,25 @@
+[package]
+name = "kairo-plugin-api"
+version.workspace = true
+edition.workspace = true
+autotests = false
+
+[features]
+default = ["sdk"]
+sdk = []
+host = ["dep:thiserror", "dep:tokio"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[dependencies]
+abi_stable.workspace = true
+async-ffi.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror = { workspace = true, optional = true }
+tokio = { version = "1", default-features = false, features = ["rt"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }

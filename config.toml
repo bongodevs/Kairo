@@ -1,0 +1,102 @@
+# Kairo's runnable local configuration. Change this before exposing the node.
+
+[server]
+address = "0.0.0.0"
+port = 2333
+
+# HTTP/2 is opt-in, as in Spring Boot.
+[server.http2]
+enabled = false
+
+[lavalink.server]
+password = "youshallnotpass"
+playerUpdateInterval = 5
+# The reference's native sender queue; Kairo has no equivalent queue and warns if this is set.
+# bufferDurationMs = 400
+frameBufferDurationMs = 5000
+trackStuckThresholdMs = 10000
+# Opus encoder quality, 0 to 10 (10 is best and most expensive).
+opusEncodingQuality = 10
+# Resampling quality: LOW, MEDIUM or HIGH.
+resamplingQuality = "LOW"
+useSeekGhosting = true
+sessionTimeout = 60
+
+# Upstream HTTP timeouts, matching the reference's `lavalink.server.timeouts` defaults.
+# [lavalink.server.timeouts]
+# connectTimeoutMs = 3000
+# connectionRequestTimeoutMs = 3000
+# socketTimeoutMs = 3000
+
+[lavalink.server.sources]
+http = true
+local = false
+
+[sources]
+providers = [] # ordered mirror templates, e.g. "youtube:ytsearch:%QUERY%"
+
+# Every installed plugin lives here as `<name>.kai`; staging goes to `<directory>/.run`.
+[plugins]
+directory = "plugins"
+
+# The bundled providers live in the separate `kairo-sources-plugin` repository, checked out at
+# `crates/sources`. Build it and copy the artifact, then uncomment this block:
+#   cargo build --manifest-path crates/sources/Cargo.toml
+# `repo` and `tag` make the host install the release asset at startup.
+# [[plugin]]
+# name = "sources"
+# repo = "bongodevs/kairo-sources-plugin"
+# tag = "0.0.1-beta"
+#
+# [plugin.config.jiosaavn]
+# enabled = true
+# secretKey = "your-own-eight-byte-key"
+# artistTopTracks = 20
+# mirror = true
+
+# Outbound proxy for the generic HTTP source. A blank `proxyHost` disables it.
+# [lavalink.server.httpConfig]
+# proxyHost = "localhost"
+# proxyPort = 3128
+# proxyUser = ""
+# proxyPassword = ""
+
+# Outbound IP rotation for source requests, matching the reference's route planner.
+# [lavalink.server.ratelimit]
+# ipBlocks = ["192.0.2.0/24"]
+# excludedIps = []
+# strategy = "RotateOnBan" # RotateOnBan | LoadBalance | NanoSwitch | RotatingNanoSwitch
+# retryLimit = -1
+# searchTriggersFail = true
+
+[metrics.prometheus]
+enabled = false
+endpoint = "/metrics"
+
+[logging]
+# `debug`/`trace` apply to Kairo's own crates; third-party crates stay at `info` unless named
+# under `[logging.levels]`, so HTTP, TLS, codec and MLS internals do not flood the console.
+level = "debug"
+format = "compact"
+timestamps = true
+showTarget = true # prefix each line with the module target
+color = true
+banner = true
+
+# [logging.levels] # reopen a target. Quote targets containing `::`.
+# reqwest = "debug"
+# "reqwest::connect" = "debug"
+
+# [logging.file] # also write to <path>/kairo.log; stdout always stays on
+# path = "./logs/"
+# maxFileSize = "1GB" # bytes, or KB/MB/GB; 0 keeps one growing file
+# maxHistory = 30     # rotated files kept as kairo.log.1, .2, ...
+
+[logging.request] # one line per HTTP request, shaped like the reference filter
+enabled = true
+includeClientInfo = false
+includeHeaders = false
+includeQueryString = true
+includePayload = true
+maxPayloadLength = 10000
+beforeRequest = false

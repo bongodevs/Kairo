@@ -1,0 +1,83 @@
+[package]
+name = "kairo-audio"
+version.workspace = true
+edition.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kairo-core = { path = "../core" }
+opus-rs.workspace = true
+rubato.workspace = true
+syom.workspace = true
+symphonia.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tokio-util = { version = "0.7.20", default-features = false, features = ["io-util"] }
+wsola.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+sysinfo.workspace = true
+
+[[bench]]
+name = "decode"
+harness = false
+
+[[bench]]
+name = "resample"
+harness = false
+
+[[bench]]
+name = "opus_encode"
+harness = false
+
+[[bench]]
+name = "opus_route"
+harness = false
+
+[[bench]]
+name = "volume"
+harness = false
+
+[[bench]]
+name = "equalizer"
+harness = false
+
+[[bench]]
+name = "karaoke"
+harness = false
+
+[[bench]]
+name = "timescale"
+harness = false
+
+[[bench]]
+name = "modulation"
+harness = false
+
+[[bench]]
+name = "distortion"
+harness = false
+
+[[bench]]
+name = "rotation"
+harness = false
+
+[[bench]]
+name = "channel_low_pass"
+harness = false
+
+[[bench]]
+name = "cutoff_pass"
+harness = false
+
+[[bench]]
+name = "normalization"
+harness = false
+
+[[bench]]
+name = "echo"
+harness = false
