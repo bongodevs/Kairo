@@ -7,17 +7,21 @@ use player::source::{
     HttpSource, LoadFuture, OpenFuture, OpenedSource, ProviderError, Source, SourceError,
     SourceMetadata, SourceReference, SourceResult, TrackSource,
 };
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
-use super::manager::PluginSlot;
+use super::health::SourceHealth;
 use super::mirror::{self, MirrorChain, MirrorSpec};
+use super::slot::{CallError, PluginSlot};
 use kairo_plugin_api::{
-    HostError, LoadRequest, LoadResult, LoadedPlugin, Open, OpenRequest, Severity,
-    Track as WireTrack, TrackInfo as WireTrackInfo,
+    HostError, LoadRequest, LoadResult, Open, OpenRequest, Severity, Track as WireTrack,
+    TrackInfo as WireTrackInfo,
 };
 use player::track::{Playlist, SourceData, Track, TrackBuilder, TrackInfo};
 
 pub(super) struct PluginSource {
     slot: Arc<PluginSlot>,
+    health: Arc<SourceHealth>,
     name: String,
     claims: SourceClaims,
     http: HttpSource,
@@ -32,7 +36,14 @@ impl PluginSource {
         http: HttpSource,
         mirror: Arc<MirrorChain>,
     ) -> Self {
-        Self { slot, name: source.name.clone(), claims, http, mirror }
+        Self {
+            slot,
+            health: Arc::new(SourceHealth::new()),
+            name: source.name.clone(),
+            claims,
+            http,
+            mirror,
+        }
     }
 }
 
@@ -43,7 +54,11 @@ impl TrackSource for PluginSource {
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         request.direct = mirror::depth() > 0;
-        let plugin = self.slot.plugin();
+        if let Err(error) = self.health.gate() {
+            return Box::pin(async move { Err(error) });
+        }
+        let slot = Arc::clone(&self.slot);
+        let health = Arc::clone(&self.health);
         let http = self.http.clone();
         let mirror = Arc::clone(&self.mirror);
         let identity = PlaybackIdentity {
@@ -52,7 +67,7 @@ impl TrackSource for PluginSource {
             metadata: track.info().map_or_else(SourceMetadata::default, SourceMetadata::from),
         };
         Box::pin(async move {
-            let opened = call_open(Arc::clone(&plugin), &identity.source, &request).await?;
+            let opened = call_open(&slot, &health, &identity.source, &request).await?;
             match opened {
                 Open::Url { url, headers, seekable, length_ms: _, content_type } => {
                     open_url(&http, identity, url, headers, seekable, content_type).await
@@ -72,7 +87,7 @@ impl TrackSource for PluginSource {
                         Err(mirror_error) => {
                             let mut direct = request;
                             direct.direct = true;
-                            match call_open(plugin, &identity.source, &direct).await? {
+                            match call_open(&slot, &health, &identity.source, &direct).await? {
                                 Open::Url {
                                     url,
                                     headers,
@@ -112,13 +127,37 @@ struct PlaybackIdentity {
 }
 
 async fn call_open(
-    plugin: Arc<LoadedPlugin>,
+    slot: &PluginSlot,
+    health: &SourceHealth,
     source: &str,
     request: &OpenRequest,
 ) -> Result<Open, SourceError> {
-    let request = request.clone();
-    let source = source.to_owned();
-    plugin.call("track.open", &request).await.map_err(|error| host_error(&source, error))
+    call_plugin(slot, health, source, "track.open", request).await
+}
+
+async fn call_plugin<I, O>(
+    slot: &PluginSlot,
+    health: &SourceHealth,
+    source: &str,
+    method: &str,
+    request: &I,
+) -> Result<O, SourceError>
+where
+    I: Serialize,
+    O: DeserializeOwned,
+{
+    match slot.call(method, request).await {
+        Ok(result) => {
+            health.succeeded();
+            Ok(result)
+        }
+        Err(error) => {
+            if error.counted() {
+                health.failed();
+            }
+            Err(call_error(source, error))
+        }
+    }
 }
 
 async fn open_url(
@@ -173,14 +212,15 @@ impl Source for PluginSource {
         if !self.claims.matches(&identifier) {
             return Box::pin(async { Ok(SourceResult::NotMine) });
         }
-        let plugin = self.slot.plugin();
+        if let Err(error) = self.health.gate() {
+            return Box::pin(async move { Err(error) });
+        }
+        let slot = Arc::clone(&self.slot);
+        let health = Arc::clone(&self.health);
         let source = self.name.clone();
         Box::pin(async move {
             let request = LoadRequest { source: source.clone(), identifier: identifier.clone() };
-            let result = plugin
-                .call("source.load", &request)
-                .await
-                .map_err(|error| host_error(&source, error))?;
+            let result = call_plugin(&slot, &health, &source, "source.load", &request).await?;
             convert_load(&source, &identifier, result)
         })
     }
@@ -443,6 +483,13 @@ fn open_request(source: &str, track: &Track) -> Result<OpenRequest, SourceError>
         _ => return Err(SourceError::fault(source, "track has incompatible source data")),
     }
     Ok(OpenRequest { source: source.to_owned(), track: wire, direct: false })
+}
+
+fn call_error(source: &str, error: CallError) -> SourceError {
+    match error {
+        CallError::Timeout => SourceError::fault(source, "plugin call timed out"),
+        CallError::Host(error) => host_error(source, error),
+    }
 }
 
 fn host_error(source: &str, error: HostError) -> SourceError {

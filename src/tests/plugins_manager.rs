@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use super::*;
+use crate::plugins::load::validate_manifest;
 
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

@@ -1,9 +1,9 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
-use kairo_plugin_api::{HostCallbacks, LoadedPlugin, Manifest};
+use kairo_plugin_api::{LoadedPlugin, Manifest};
 use player::source::{ProviderManager, Source};
 use serde::Serialize;
 
@@ -11,9 +11,10 @@ use super::adapter::{ClaimRegistry, PluginSource, RegistrationError};
 use super::codec::PluginCodec;
 use super::download;
 use super::guard::{self, Startup};
-use super::host_api::{PluginHost, client};
+use super::host_api::client;
+use super::load::load_staged;
 use super::mirror::MirrorChain;
-use super::native;
+use super::slot::PluginSlot;
 use super::stage;
 use crate::config::{FallbackProvider, PluginConfig};
 
@@ -49,33 +50,6 @@ enum EntryState {
     Loaded { slot: Arc<PluginSlot>, hash: String, reason: Option<String> },
     Failed { reason: String },
     Quarantined { since: u64 },
-}
-
-/// The hot-swappable handle every adapter reads at the start of a call.
-pub(super) struct PluginSlot {
-    current: RwLock<Arc<LoadedPlugin>>,
-}
-
-impl PluginSlot {
-    fn new(plugin: Arc<LoadedPlugin>) -> Self {
-        Self { current: RwLock::new(plugin) }
-    }
-
-    pub(super) fn plugin(&self) -> Arc<LoadedPlugin> {
-        self.read().clone()
-    }
-
-    fn replace(&self, plugin: Arc<LoadedPlugin>) -> Arc<LoadedPlugin> {
-        std::mem::replace(&mut *self.write(), plugin)
-    }
-
-    fn read(&self) -> RwLockReadGuard<'_, Arc<LoadedPlugin>> {
-        self.current.read().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn write(&self) -> RwLockWriteGuard<'_, Arc<LoadedPlugin>> {
-        self.current.write().unwrap_or_else(PoisonError::into_inner)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -437,29 +411,6 @@ async fn discover(
     }
 }
 
-async fn load_staged(
-    config: &PluginConfig,
-    path: &Path,
-    client: reqwest::Client,
-) -> Result<Arc<LoadedPlugin>, String> {
-    let init = serde_json::to_value(&config.config).map_err(|error| error.to_string())?;
-    let callbacks: Arc<dyn HostCallbacks> = Arc::new(PluginHost::new(config.name.clone(), client));
-    let expected_name = config.name.clone();
-    let check_name = expected_name.clone();
-    let path = path.to_owned();
-    let plugin = tokio::task::spawn_blocking(move || {
-        native::check(&path, &check_name).map_err(|error| error.to_string())?;
-        LoadedPlugin::load(&path, callbacks, &init).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| format!("plugin loader stopped: {error}"))??;
-    if let Err(error) = validate_manifest(&expected_name, plugin.manifest()) {
-        plugin.shutdown();
-        return Err(error);
-    }
-    Ok(Arc::new(plugin))
-}
-
 /// Routing entries are registered once at startup, so a reload may not move them under us.
 fn validate_reload(name: &str, previous: &Manifest, next: &Manifest) -> Result<(), String> {
     if previous.sources.len() != next.sources.len() {
@@ -489,35 +440,6 @@ fn validate_reload(name: &str, previous: &Manifest, next: &Manifest) -> Result<(
 
 fn set(values: &[String]) -> BTreeSet<&str> {
     values.iter().map(String::as_str).collect()
-}
-
-fn validate_manifest(expected_name: &str, manifest: &Manifest) -> Result<(), String> {
-    if manifest.name != expected_name {
-        return Err(format!(
-            "plugin manifest name {:?} does not match config name {expected_name:?}",
-            manifest.name
-        ));
-    }
-    if manifest.version.trim().is_empty() {
-        return Err(String::from("plugin manifest version is empty"));
-    }
-    let mut sources = HashSet::new();
-    for source in &manifest.sources {
-        if !valid_name(&source.name) {
-            return Err(format!("plugin source name {:?} is invalid", source.name));
-        }
-        if !sources.insert(source.name.as_str()) {
-            return Err(format!("plugin source name {:?} is duplicated", source.name));
-        }
-    }
-    Ok(())
-}
-
-fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 #[cfg(test)]
