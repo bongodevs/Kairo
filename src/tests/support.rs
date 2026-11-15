@@ -131,13 +131,16 @@ pub(crate) fn memory_sources() -> Sources {
 
 /// The built `sources` cdylib that plugin tests copy to the install path.
 pub(crate) fn sources_plugin() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/sources/target/debug").join(
-        format!(
-            "{}kairo_plugin_sources{}",
-            std::env::consts::DLL_PREFIX,
-            std::env::consts::DLL_SUFFIX
-        ),
-    )
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let installed = root.join("plugins").join(format!("sources.{}", kairo_plugin_api::EXTENSION));
+    if installed.exists() {
+        return installed;
+    }
+    root.join("crates/sources/target/debug").join(format!(
+        "{}kairo_plugin_sources{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ))
 }
 
 pub(crate) fn encoded_track() -> String {
@@ -220,6 +223,7 @@ pub(crate) fn app_state_with_shared_sources(
         search_metrics: Arc::new(crate::stats::SearchMetrics::default()),
         request_log: crate::config::RequestLoggingConfig::default(),
         shutdown: tokio::sync::watch::channel(false).0,
+        plugins: Arc::new(crate::plugins::PluginManager::empty()),
     }
 }
 

@@ -63,6 +63,41 @@ async fn a_library_for_another_os_is_rejected_before_loading() {
     tokio::fs::remove_dir_all(root).await.expect("cleanup");
 }
 
+#[tokio::test]
+async fn reload_reports_unknown_and_unregistered_plugins() {
+    let empty = PluginManager::empty();
+    assert!(matches!(empty.reload("nope").await, Err(ReloadError::Unknown { .. })));
+
+    let root = root("plugin-reload-unavailable");
+    let manager = PluginManager::load(&[config("missing")], &root).await.expect("manager");
+    assert!(matches!(manager.reload("missing").await, Err(ReloadError::Unavailable { .. })));
+    manager.shutdown().await;
+    tokio::fs::remove_dir_all(root).await.expect("cleanup");
+}
+
+#[tokio::test]
+async fn a_quarantined_build_is_not_loaded_and_keeps_its_marker() {
+    let root = root("plugin-quarantine");
+    tokio::fs::create_dir_all(&root).await.expect("plugin root");
+    let config = config("sources");
+    tokio::fs::write(config.install_path(&root), b"crashing build")
+        .await
+        .expect("installed plugin");
+    let staged = stage::stage(&config, &root).await.expect("stage");
+    guard::arm(&root, "sources", &staged.hash).await.expect("guard");
+
+    let manager = PluginManager::load(&[config], &root).await.expect("manager");
+    assert_eq!(manager.counts(), (0, 1));
+    let listing = manager.listing();
+    assert_eq!(listing[0].state, "quarantined");
+    assert!(listing[0].reason.as_deref().unwrap_or_default().contains("quarantined"));
+    assert!(matches!(manager.reload("sources").await, Err(ReloadError::Quarantined { .. })));
+
+    manager.shutdown().await;
+    assert!(root.join(".guard/sources").exists(), "a quarantined marker survives a graceful stop");
+    tokio::fs::remove_dir_all(root).await.expect("cleanup");
+}
+
 #[test]
 fn manifest_validation_checks_identity_version_and_source_names() {
     let source = Source::new("demo");
@@ -130,7 +165,7 @@ async fn real_fixture_is_staged_loaded_and_reported() {
 
     let manager = PluginManager::load(&[config], &root).await.expect("manager");
     assert_eq!(manager.counts(), (1, 0));
-    assert_eq!(manager.source_names().collect::<Vec<_>>(), ["jiosaavn"]);
+    assert_eq!(manager.source_names(), ["jiosaavn"]);
     let mut providers = ProviderManager::new();
     let mirror = manager
         .register_sources(&mut providers, ["http", "local"], Vec::new())
@@ -305,6 +340,37 @@ async fn shutdown_waits_for_in_flight_search_calls() {
     server.task.await.expect("search server");
 
     drop(sources);
+    tokio::fs::remove_dir_all(root).await.expect("cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "run after building the sources plugin"]
+async fn real_fixture_reload_keeps_serving_new_calls() {
+    let root = root("plugin-reload-fixture");
+    tokio::fs::create_dir_all(&root).await.expect("plugin root");
+    let server = search_server(2, Duration::ZERO).await;
+    let config = search_config("sources", server.address);
+    install_fixture(&config, &root).await;
+    let (manager, sources) = loaded_sources(&root, config).await;
+
+    let LoadOutcome::Search(tracks) = sources.search("jssearch:world").await else {
+        panic!("search before reload");
+    };
+    assert_eq!(tracks.len(), 1);
+
+    let entry = manager.reload("sources").await.expect("reload");
+    assert_eq!(entry.state, "loaded");
+    assert_eq!(entry.version.as_deref(), Some("0.0.1-beta"));
+    assert_eq!(entry.sources, ["jiosaavn"]);
+
+    let LoadOutcome::Search(tracks) = sources.search("jssearch:world").await else {
+        panic!("search after reload");
+    };
+    assert_eq!(tracks.len(), 1);
+    server.task.await.expect("search server");
+
+    drop(sources);
+    manager.shutdown().await;
     tokio::fs::remove_dir_all(root).await.expect("cleanup");
 }
 

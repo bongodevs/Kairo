@@ -33,6 +33,27 @@ fn assert_v4(response: &HttpResponse) {
 }
 
 #[tokio::test]
+async fn plugin_listing_and_reload_are_admin_routes() {
+    let address = spawn_server(app_state(Some("letmein"))).await;
+
+    let response = request(address, "GET", "/v4/plugins", None, None).await;
+    assert_eq!(response.status, 401);
+
+    let response = request(address, "GET", "/v4/plugins", AUTH, None).await;
+    assert_eq!(response.status, 200);
+    assert_eq!(json(&response), serde_json::json!([]));
+
+    let response = request(address, "POST", "/v4/plugins/missing/reload", AUTH, None).await;
+    assert_eq!(response.status, 404);
+    let body = json(&response);
+    assert!(body["message"].as_str().unwrap_or_default().contains("missing"));
+
+    let response = request(address, "OPTIONS", "/v4/plugins", AUTH, None).await;
+    assert_eq!(response.status, 200);
+    assert!(response.header("allow").unwrap_or_default().contains("GET"));
+}
+
+#[tokio::test]
 async fn auth_info_version_and_stats_match_the_v4_contract() {
     let address = spawn_server(app_state(Some("letmein"))).await;
 

@@ -26,7 +26,9 @@ use crate::players::FilterPolicy;
 use crate::plugins::PluginManager;
 use crate::rest::middleware::auth;
 use crate::rest::middleware::request_log;
-use crate::rest::routes::{info, players, route_planner, sessions, stats, tracks};
+use crate::rest::routes::{
+    info, players, plugins as plugin_routes, route_planner, sessions, stats, tracks,
+};
 use crate::route_planner::RoutePlanner;
 use crate::session::SessionStore;
 use crate::ws;
@@ -52,6 +54,7 @@ pub(crate) struct AppState {
     pub(crate) search_metrics: Arc<crate::stats::SearchMetrics>,
     pub(crate) request_log: RequestLoggingConfig,
     pub(crate) shutdown: tokio::sync::watch::Sender<bool>,
+    pub(crate) plugins: Arc<PluginManager>,
 }
 
 pub(crate) struct CpuSampler {
@@ -65,6 +68,10 @@ impl AppState {
 
     pub(crate) fn sources(&self) -> &Sources {
         &self.sources
+    }
+
+    pub(crate) fn plugins(&self) -> &PluginManager {
+        &self.plugins
     }
 
     pub(crate) fn codecs(&self) -> &TrackCodecs {
@@ -118,9 +125,11 @@ pub async fn serve(config: &Config) -> anyhow::Result<()> {
     let addr = SocketAddr::new(ip, config.server.port);
     let listener = TcpListener::bind(addr).await.with_context(|| format!("bind {addr}"))?;
     let bound = listener.local_addr().context("read bound address")?;
-    let plugins = PluginManager::load(&config.plugins, &config.plugin_directory.directory)
-        .await
-        .context("configure plugins")?;
+    let plugins = Arc::new(
+        PluginManager::load(&config.plugins, &config.plugin_directory.directory)
+            .await
+            .context("configure plugins")?,
+    );
     let sources = match build(config, route_planner.as_ref(), &plugins) {
         Ok(sources) => sources,
         Err(error) => {
@@ -157,6 +166,7 @@ pub async fn serve(config: &Config) -> anyhow::Result<()> {
         search_metrics: Arc::new(crate::stats::SearchMetrics::default()),
         request_log: config.logging.request.clone(),
         shutdown,
+        plugins: Arc::clone(&plugins),
     };
     let sessions = state.sessions.clone();
     let app = router(state);
@@ -193,6 +203,11 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/version", get(info::version).options(preflight("GET,HEAD,OPTIONS")))
         .route("/v4/info", get(info::info).options(preflight("GET,HEAD,OPTIONS")))
         .route("/v4/stats", get(stats::stats).options(preflight("GET,HEAD,OPTIONS")))
+        .route("/v4/plugins", get(plugin_routes::list).options(preflight("GET,HEAD,OPTIONS")))
+        .route(
+            "/v4/plugins/{name}/reload",
+            post(plugin_routes::reload).options(preflight("POST,OPTIONS")),
+        )
         .route("/v4/loadtracks", get(tracks::loadtracks).options(preflight("GET,HEAD,OPTIONS")))
         .route("/v4/decodetrack", get(tracks::decodetrack).options(preflight("GET,HEAD,OPTIONS")))
         .route("/v4/decodetracks", post(tracks::decodetracks).options(preflight("POST,OPTIONS")))
@@ -229,7 +244,7 @@ pub(crate) fn router(state: AppState) -> Router {
     if log_requests {
         rest = rest.layer(middleware::from_fn_with_state(state.clone(), request_log::middleware));
     }
-    // Outside the request log so an oversized body still gets the REST error shape.
+
     let rest = rest.layer(middleware::from_fn(error::middleware));
 
     let mut outer = Router::new().route("/v4/websocket", get(ws::websocket));
@@ -246,8 +261,6 @@ pub(crate) fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Spring Boot offers HTTP/2 only when `server.http2.enabled` is true. The h2 server path is always
-/// compiled in, so a request that negotiated h2 is refused at the edge unless the operator opted in.
 async fn http2_gate(State(state): State<AppState>, req: Request, next: Next) -> Response {
     if req.version() == Version::HTTP_2 && !state.http2_enabled {
         tracing::warn!("rejecting an HTTP/2 request because server.http2.enabled is false");
@@ -256,7 +269,6 @@ async fn http2_gate(State(state): State<AppState>, req: Request, next: Next) -> 
     next.run(req).await
 }
 
-/// The reference maps the root and its old v3 endpoint to an empty `200` warning.
 async fn old_websocket() {
     tracing::warn!(
         "This is the old Lavalink websocket endpoint. Please use /v4/websocket instead. If you are \
@@ -269,8 +281,6 @@ async fn not_found() -> StatusCode {
     StatusCode::NOT_FOUND
 }
 
-/// Spring answers `OPTIONS` with `200` and the methods the mapping accepts, including `OPTIONS`
-/// itself; handlers are attached next to each route so the list cannot drift from the route table.
 fn preflight(methods: &'static str) -> impl Fn() -> std::future::Ready<Response> + Clone {
     move || {
         let mut response = StatusCode::OK.into_response();
@@ -368,9 +378,10 @@ fn build(
         )
         .with_local_address(local_address);
     let source_config = config.lavalink.server.sources.source_config(&config.sources);
+    let plugin_sources = plugins.source_names();
     let fallbacks = resolve_providers(
         &config.sources.providers,
-        plugins.source_names().chain(
+        plugin_sources.iter().map(String::as_str).chain(
             [(source_config.local, LOCAL_SOURCE), (source_config.http, HTTP_SOURCE)]
                 .into_iter()
                 .filter_map(|(enabled, name)| enabled.then_some(name)),

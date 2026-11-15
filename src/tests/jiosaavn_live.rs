@@ -32,9 +32,10 @@ async fn live_jiosaavn_load_decode_and_frames() {
     let manager =
         PluginManager::load(&[plugin], Path::new("plugins")).await.expect("plugin manager");
     let source_config = config.lavalink.server.sources.source_config(&config.sources);
+    let plugin_sources = manager.source_names();
     let fallbacks = resolve_providers(
         &config.sources.providers,
-        manager.source_names().chain(
+        plugin_sources.iter().map(String::as_str).chain(
             [(source_config.local, LOCAL_SOURCE), (source_config.http, HTTP_SOURCE)]
                 .into_iter()
                 .filter_map(|(enabled, name)| enabled.then_some(name)),

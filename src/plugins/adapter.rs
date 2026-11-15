@@ -8,6 +8,7 @@ use player::source::{
     SourceMetadata, SourceReference, SourceResult, TrackSource,
 };
 
+use super::manager::PluginSlot;
 use super::mirror::{self, MirrorChain, MirrorSpec};
 use kairo_plugin_api::{
     HostError, LoadRequest, LoadResult, LoadedPlugin, Open, OpenRequest, Severity,
@@ -16,7 +17,7 @@ use kairo_plugin_api::{
 use player::track::{Playlist, SourceData, Track, TrackBuilder, TrackInfo};
 
 pub(super) struct PluginSource {
-    plugin: Arc<LoadedPlugin>,
+    slot: Arc<PluginSlot>,
     name: String,
     claims: SourceClaims,
     http: HttpSource,
@@ -25,13 +26,13 @@ pub(super) struct PluginSource {
 
 impl PluginSource {
     pub(super) fn new(
-        plugin: Arc<LoadedPlugin>,
+        slot: Arc<PluginSlot>,
         source: &kairo_plugin_api::Source,
         claims: SourceClaims,
         http: HttpSource,
         mirror: Arc<MirrorChain>,
     ) -> Self {
-        Self { plugin, name: source.name.clone(), claims, http, mirror }
+        Self { slot, name: source.name.clone(), claims, http, mirror }
     }
 }
 
@@ -42,7 +43,7 @@ impl TrackSource for PluginSource {
             Err(error) => return Box::pin(async move { Err(error) }),
         };
         request.direct = mirror::depth() > 0;
-        let plugin = Arc::clone(&self.plugin);
+        let plugin = self.slot.plugin();
         let http = self.http.clone();
         let mirror = Arc::clone(&self.mirror);
         let identity = PlaybackIdentity {
@@ -172,7 +173,7 @@ impl Source for PluginSource {
         if !self.claims.matches(&identifier) {
             return Box::pin(async { Ok(SourceResult::NotMine) });
         }
-        let plugin = Arc::clone(&self.plugin);
+        let plugin = self.slot.plugin();
         let source = self.name.clone();
         Box::pin(async move {
             let request = LoadRequest { source: source.clone(), identifier: identifier.clone() };

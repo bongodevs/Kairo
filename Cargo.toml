@@ -12,8 +12,8 @@ members = [
     "crates/kairo-plugin-api",
     "crates/voice",
 ]
-# The bundled provider library is its own repository, checked out at crates/sources.
-exclude = ["crates/sources"]
+# The bundled provider library is its own repository, checked out here.
+exclude = ["crates/kairo-sources-plugin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -93,3 +93,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.kairo-audio]
+opt-level = 3

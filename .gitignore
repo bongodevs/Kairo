@@ -5,3 +5,4 @@
 target/
 /config.local.toml
 /plugins/*
+/crates/kairo-sources-plugin/

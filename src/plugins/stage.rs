@@ -39,7 +39,13 @@ pub(super) enum StageError {
     },
 }
 
-pub(super) async fn stage(config: &PluginConfig, root: &Path) -> Result<PathBuf, StageError> {
+#[derive(Debug)]
+pub(super) struct Staged {
+    pub(super) path: PathBuf,
+    pub(super) hash: String,
+}
+
+pub(super) async fn stage(config: &PluginConfig, root: &Path) -> Result<Staged, StageError> {
     let source = config.install_path(root);
     let run = root.join(".run");
     tokio::fs::create_dir_all(&run)
@@ -67,12 +73,12 @@ pub(super) async fn stage(config: &PluginConfig, root: &Path) -> Result<PathBuf,
             return Err(StageError::Worker(error));
         }
     };
-    let staged =
-        run.join(format!("{}-{}.{}", config.name, hex(&digest), kairo_plugin_api::EXTENSION));
+    let hash = hex(&digest);
+    let staged = run.join(format!("{}-{hash}.{}", config.name, kairo_plugin_api::EXTENSION));
     match tokio::fs::try_exists(&staged).await {
         Ok(true) => {
             let _ = tokio::fs::remove_file(&temporary).await;
-            return Ok(staged);
+            return Ok(Staged { path: staged, hash });
         }
         Ok(false) => {}
         Err(source) => {
@@ -84,7 +90,7 @@ pub(super) async fn stage(config: &PluginConfig, root: &Path) -> Result<PathBuf,
         let _ = tokio::fs::remove_file(&temporary).await;
         return Err(StageError::Publish { path: staged, source });
     }
-    Ok(staged)
+    Ok(Staged { path: staged, hash })
 }
 
 fn hash(path: &Path) -> io::Result<[u8; 32]> {

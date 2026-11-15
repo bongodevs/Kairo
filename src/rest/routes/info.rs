@@ -6,6 +6,7 @@ use player::source::Sources;
 
 use crate::app::AppState;
 use crate::players::FilterPolicy;
+use crate::plugins::PluginManager;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const JVM: &str = "n/a";
 const PLAYER: &str = "n/a";
@@ -64,7 +65,7 @@ fn epoch_ms(key: Option<&'static str>) -> i64 {
     key.and_then(|value| value.parse::<i64>().ok()).unwrap_or(0)
 }
 
-fn build_info(sources: &Sources, filter_policy: FilterPolicy) -> Info {
+fn build_info(sources: &Sources, filter_policy: FilterPolicy, plugins: &PluginManager) -> Info {
     Info {
         version: parse_semver(VERSION),
         build_time: epoch_ms(option_env!("KAIRO_BUILD_TIME_UNIX_MS")),
@@ -77,7 +78,11 @@ fn build_info(sources: &Sources, filter_policy: FilterPolicy) -> Info {
         lavaplayer: PLAYER.to_string(),
         source_managers: sources.names().map(str::to_owned).collect(),
         filters: filter_policy.enabled_names().map(str::to_owned).collect(),
-        plugins: Vec::new(),
+        plugins: plugins
+            .versions()
+            .into_iter()
+            .map(|(name, version)| Plugin { name, version })
+            .collect(),
     }
 }
 
@@ -86,7 +91,7 @@ pub(crate) async fn version() -> &'static str {
 }
 
 pub(crate) async fn info(State(state): State<AppState>) -> Json<Info> {
-    Json(build_info(state.sources(), state.filter_policy()))
+    Json(build_info(state.sources(), state.filter_policy(), state.plugins()))
 }
 
 #[cfg(test)]

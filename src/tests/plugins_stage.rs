@@ -23,16 +23,18 @@ async fn staged_copy_is_content_addressed_and_reused() {
 
     let first = stage(&config, &root).await.expect("first stage");
     let same = stage(&config, &root).await.expect("same stage");
-    assert_eq!(first, same);
-    assert_eq!(tokio::fs::read(&first).await.expect("staged bytes"), b"first build");
-    assert!(first.starts_with(root.join(".run")));
-    assert!(first.file_name().unwrap().to_string_lossy().starts_with("hello-source-"));
-    assert_eq!(first.extension().and_then(|ext| ext.to_str()), Some("kai"));
+    assert_eq!(first.path, same.path);
+    assert_eq!(first.hash, same.hash);
+    assert_eq!(tokio::fs::read(&first.path).await.expect("staged bytes"), b"first build");
+    assert!(first.path.starts_with(root.join(".run")));
+    assert!(first.path.file_name().unwrap().to_string_lossy().starts_with("hello-source-"));
+    assert_eq!(first.path.extension().and_then(|ext| ext.to_str()), Some("kai"));
 
     tokio::fs::write(&installed, b"second build").await.expect("updated plugin");
     let second = stage(&config, &root).await.expect("second stage");
-    assert_ne!(first, second);
-    assert_eq!(tokio::fs::read(second).await.expect("updated bytes"), b"second build");
+    assert_ne!(first.path, second.path);
+    assert_ne!(first.hash, second.hash);
+    assert_eq!(tokio::fs::read(&second.path).await.expect("updated bytes"), b"second build");
     tokio::fs::remove_dir_all(root).await.expect("cleanup");
 }
 

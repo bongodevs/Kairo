@@ -1,5 +1,6 @@
 use super::*;
 use crate::players::FILTER_NAMES;
+use crate::plugins::PluginManager;
 #[test]
 fn parses_plain_semver() {
     let v = parse_semver("4.0.7");
@@ -16,8 +17,12 @@ fn parses_prerelease_and_junk() {
 
 #[test]
 fn info_json_has_the_reference_keys() {
-    let value = serde_json::to_value(build_info(&Sources::new(), FilterPolicy::default()))
-        .expect("serializable");
+    let value = serde_json::to_value(build_info(
+        &Sources::new(),
+        FilterPolicy::default(),
+        &PluginManager::empty(),
+    ))
+    .expect("serializable");
     for key in
         ["version", "buildTime", "git", "jvm", "lavaplayer", "sourceManagers", "filters", "plugins"]
     {
@@ -40,17 +45,23 @@ fn info_reports_only_registered_source_names() {
         player::source::SourceCatalog::new(),
     )
     .expect("sources");
-    assert_eq!(build_info(&sources, FilterPolicy::default()).source_managers, ["local", "http"]);
+    assert_eq!(
+        build_info(&sources, FilterPolicy::default(), &PluginManager::empty()).source_managers,
+        ["local", "http"]
+    );
 }
 
 #[test]
 fn info_reports_every_native_filter_name() {
-    assert_eq!(build_info(&Sources::new(), FilterPolicy::default()).filters, FILTER_NAMES);
+    assert_eq!(
+        build_info(&Sources::new(), FilterPolicy::default(), &PluginManager::empty()).filters,
+        FILTER_NAMES
+    );
 }
 
 #[test]
 fn build_metadata_is_a_millisecond_epoch_and_a_short_commit() {
-    let info = build_info(&Sources::new(), FilterPolicy::default());
+    let info = build_info(&Sources::new(), FilterPolicy::default(), &PluginManager::empty());
     assert!(info.build_time > 0, "buildTime must be a millisecond epoch, not zero");
 
     let commit = info.git.commit;

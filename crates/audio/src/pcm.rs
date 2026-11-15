@@ -68,6 +68,23 @@ pub enum ResamplingQuality {
     High,
 }
 
+/// Sinc window width for `MEDIUM` and `HIGH`, in taps.
+///
+/// 64 taps are flat to 15 kHz and 128 taps to 18 kHz for 44.1 kHz sources, while the cost grows
+/// almost linearly. `HIGH` sits at 128 taps: the audible band is intact and it costs about half of
+/// rubato's 256-tap, cubic-interpolated default.
+const MEDIUM_TAPS: usize = 64;
+const HIGH_TAPS: usize = 128;
+
+/// Table steps per input sample, setting the sub-sample resolution of the sinc kernel.
+const SINC_OVERSAMPLING: usize = 128;
+
+fn sinc_parameters(taps: usize) -> SincInterpolationParameters {
+    SincInterpolationParameters::new(taps, WindowFunction::BlackmanHarris2)
+        .oversampling_factor(SINC_OVERSAMPLING)
+        .interpolation(SincInterpolationType::Linear)
+}
+
 pub(super) fn make_resampler(
     quality: ResamplingQuality,
     source_rate: u32,
@@ -85,16 +102,18 @@ pub(super) fn make_resampler(
             channels,
             FixedAsync::Input,
         ),
-        ResamplingQuality::Medium => {
-            let params = SincInterpolationParameters::new(64, WindowFunction::BlackmanHarris2)
-                .oversampling_factor(64)
-                .interpolation(SincInterpolationType::Linear);
-            Async::new_sinc(ratio, 1.0, &params, chunk_frames, channels, FixedAsync::Input)
-        }
+        ResamplingQuality::Medium => Async::new_sinc(
+            ratio,
+            1.0,
+            &sinc_parameters(MEDIUM_TAPS),
+            chunk_frames,
+            channels,
+            FixedAsync::Input,
+        ),
         ResamplingQuality::High => Async::new_sinc(
             ratio,
             1.0,
-            &SincInterpolationParameters::default(),
+            &sinc_parameters(HIGH_TAPS),
             chunk_frames,
             channels,
             FixedAsync::Input,

@@ -113,7 +113,11 @@ async fn ensure_from(
     {
         match tokio::fs::try_exists(&installed).await {
             Ok(true) => {
-                return match hash_file(&installed).await? == entry.sha256 {
+                let current = hash_file(&installed).await? == entry.sha256;
+                if current {
+                    tracing::debug!(plugin = %config.name, tag = %tag, "plugin is up to date");
+                }
+                return match current {
                     true => Ok(()),
                     false => Err(DownloadError::LockedHashMismatch),
                 };
@@ -123,6 +127,13 @@ async fn ensure_from(
         }
     }
 
+    tracing::info!(
+        plugin = %config.name,
+        repo = %repo,
+        tag = %tag,
+        asset = %asset,
+        "downloading plugin"
+    );
     let (bytes, published) = release_through_url(client, origin, repo, tag, &asset).await?;
     let sha256 = hex(&Sha256::digest(&bytes));
     if published.is_some_and(|published| !published.eq_ignore_ascii_case(&sha256)) {
@@ -130,6 +141,12 @@ async fn ensure_from(
     }
 
     write_plugin(&bytes, &installed, root).await?;
+    tracing::info!(
+        plugin = %config.name,
+        bytes = bytes.len(),
+        path = %installed.display(),
+        "plugin downloaded"
+    );
     lock.entries.retain(|entry| entry.name != config.name);
     lock.entries.push(LockEntry { name: config.name.clone(), tag: tag.clone(), asset, sha256 });
     lock.entries.sort_by(|left, right| left.name.cmp(&right.name));
