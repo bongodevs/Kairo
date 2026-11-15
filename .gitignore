@@ -4,11 +4,4 @@
 /target/
 target/
 /config.local.toml
-/plugins/*.kai
-/plugins/*.so
-/plugins/*.dylib
-/plugins/*.dll
-/crates/sources/
-/plugins/.run/
-/plugins/.guard/
-/plugins/.tmp/
+/plugins/*
