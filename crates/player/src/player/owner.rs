@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -7,7 +9,7 @@ use tokio::sync::mpsc;
 
 use super::PlayerState;
 use crate::config::PlayerConfig;
-use crate::decode::Millis;
+use crate::decode::{BlockingDecoder, Millis};
 use crate::effects::{CrossfadeOptions, TapeOptions};
 use crate::error::PlayerError;
 use crate::event::{PlayerEvent, TrackEndReason};
@@ -15,7 +17,7 @@ use crate::filters::Filters;
 use crate::pipeline::{
     FrameControl, FrameProducer, Playback, WorkerEnd, WorkerSignal, WorkerState, run_worker,
 };
-use crate::source::Sources;
+use crate::source::{OpenedSource, Sources};
 use crate::track::Track;
 use crate::track::transition::PromotionSlot;
 use crate::volume::Volume;
@@ -378,6 +380,42 @@ impl PlayerOwner {
             self.launch(state);
         }
         Ok(sought)
+    }
+
+    // Boxed so the player command loop does not carry this future's state on its own stack.
+    pub(crate) fn replace_media(
+        &mut self,
+        playback: OpenedSource,
+        position: Millis,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, PlayerError>> + Send + '_>> {
+        Box::pin(async move {
+            self.settle().await?;
+            if self.track.is_none() {
+                return Ok(false);
+            }
+            let Some(state) = self.take_worker_state().await? else {
+                return Ok(false);
+            };
+            let mut state = Box::new(state);
+            let runtime = self.runtime.clone();
+            let opened = tokio::task::spawn_blocking(move || {
+                let mut decoder = BlockingDecoder::open(playback, runtime)?;
+                if position != Millis::default() && !decoder.seek(position)? {
+                    return Ok::<_, PlayerError>(None);
+                }
+                Ok(Some(decoder))
+            })
+            .await
+            .map_err(|_| PlayerError::WorkerGone)?;
+            let Some(decoder) = opened? else {
+                self.restore_state(*state);
+                return Ok(false);
+            };
+            state.replace_media(decoder, position);
+            self.next = None;
+            self.restore_state(*state);
+            Ok(true)
+        })
     }
 }
 

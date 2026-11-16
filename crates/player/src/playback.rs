@@ -72,6 +72,10 @@ mod rotation_tests;
 mod seek_tests;
 
 #[cfg(test)]
+#[path = "../tests/playback_replace.rs"]
+mod replace_tests;
+
+#[cfg(test)]
 #[path = "../tests/playback_state.rs"]
 mod state_tests;
 

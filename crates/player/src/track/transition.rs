@@ -245,7 +245,7 @@ impl PlayerOwner {
         }
     }
 
-    async fn take_worker_state(&mut self) -> Result<Option<WorkerState>, PlayerError> {
+    pub(crate) async fn take_worker_state(&mut self) -> Result<Option<WorkerState>, PlayerError> {
         let playback = self.take_playback();
         match playback {
             Playback::Paused(state) => Ok(Some(*state)),
@@ -284,7 +284,7 @@ impl PlayerOwner {
         }
     }
 
-    fn restore_state(&mut self, mut state: WorkerState) {
+    pub(crate) fn restore_state(&mut self, mut state: WorkerState) {
         state.producer_mut().set_paused(self.paused);
         state.producer_mut().set_end_time(self.end_time);
         if self.paused {

@@ -12,27 +12,75 @@ use crate::pipeline::{
     FrameConsumer, FrameControl, FrameProducer, Playback, WorkerEnd, frame_buffer,
 };
 use crate::player::{PlayerOwner, PlayerState};
-use crate::source::Sources;
+use crate::source::{OpenedSource, Sources};
 use crate::track::Track;
 use crate::volume::Volume;
 
 pub(crate) enum Command {
-    Play { track: Track, no_replace: bool, reply: oneshot::Sender<Result<bool, PlayerError>> },
-    Stop { reply: oneshot::Sender<Result<(), PlayerError>> },
-    Pause { paused: bool, reply: oneshot::Sender<Result<(), PlayerError>> },
-    State { reply: oneshot::Sender<Result<PlayerState, PlayerError>> },
-    Seek { position: Millis, reply: oneshot::Sender<Result<bool, PlayerError>> },
-    EndTime { end_time: Option<Millis>, reply: oneshot::Sender<Result<(), PlayerError>> },
-    Volume { volume: Volume, reply: oneshot::Sender<Result<(), PlayerError>> },
-    Filters { filters: Box<Filters>, reply: oneshot::Sender<Result<(), PlayerError>> },
-    UserData { user_data: Map<String, Value>, reply: oneshot::Sender<Result<bool, PlayerError>> },
-    Tape { options: Option<TapeOptions>, reply: oneshot::Sender<Result<(), PlayerError>> },
-    PrepareNext { track: Track, reply: oneshot::Sender<Result<bool, PlayerError>> },
-    ClearNext { reply: oneshot::Sender<Result<(), PlayerError>> },
-    Crossfade { options: Option<CrossfadeOptions>, reply: oneshot::Sender<Result<(), PlayerError>> },
-    ResetCrossfade { reply: oneshot::Sender<Result<(), PlayerError>> },
-    TransitionNow { reply: oneshot::Sender<Result<bool, PlayerError>> },
-    Shutdown { reply: oneshot::Sender<Result<(), PlayerError>> },
+    Play {
+        track: Track,
+        no_replace: bool,
+        reply: oneshot::Sender<Result<bool, PlayerError>>,
+    },
+    Stop {
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    Pause {
+        paused: bool,
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    State {
+        reply: oneshot::Sender<Result<PlayerState, PlayerError>>,
+    },
+    Seek {
+        position: Millis,
+        reply: oneshot::Sender<Result<bool, PlayerError>>,
+    },
+    ReplaceMedia {
+        playback: Box<OpenedSource>,
+        position: Millis,
+        reply: oneshot::Sender<Result<bool, PlayerError>>,
+    },
+    EndTime {
+        end_time: Option<Millis>,
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    Volume {
+        volume: Volume,
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    Filters {
+        filters: Box<Filters>,
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    UserData {
+        user_data: Map<String, Value>,
+        reply: oneshot::Sender<Result<bool, PlayerError>>,
+    },
+    Tape {
+        options: Option<TapeOptions>,
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    PrepareNext {
+        track: Track,
+        reply: oneshot::Sender<Result<bool, PlayerError>>,
+    },
+    ClearNext {
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    Crossfade {
+        options: Option<CrossfadeOptions>,
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    ResetCrossfade {
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    TransitionNow {
+        reply: oneshot::Sender<Result<bool, PlayerError>>,
+    },
+    Shutdown {
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
 }
 
 const COMMAND_CAPACITY: usize = 16;
@@ -66,6 +114,22 @@ impl Player {
 
     pub async fn seek(&self, position: Millis) -> Result<bool, PlayerError> {
         self.request(|reply| Command::Seek { position, reply }).await
+    }
+
+    /// Swap the active track's media for an already opened source without restarting the track or
+    /// emitting an event. Returns `false` when there is no active track or the source cannot start
+    /// at `position`.
+    pub async fn replace_media(
+        &self,
+        playback: OpenedSource,
+        position: Millis,
+    ) -> Result<bool, PlayerError> {
+        self.request(|reply| Command::ReplaceMedia {
+            playback: Box::new(playback),
+            position,
+            reply,
+        })
+        .await
     }
 
     pub async fn set_end_time(&self, end_time: Option<Millis>) -> Result<(), PlayerError> {
@@ -274,6 +338,9 @@ async fn dispatch(owner: &mut PlayerOwner, command: Command) {
         }
         Command::Seek { position, reply } => {
             let _ = reply.send(owner.seek(position).await);
+        }
+        Command::ReplaceMedia { playback, position, reply } => {
+            let _ = reply.send(owner.replace_media(*playback, position).await);
         }
         Command::EndTime { end_time, reply } => {
             let _ = reply.send(owner.set_end_time(end_time));
