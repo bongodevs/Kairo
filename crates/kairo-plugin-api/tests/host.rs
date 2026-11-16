@@ -191,3 +191,57 @@ async fn real_fixture_loads_calls_and_shuts_down() {
     let error = plugin.call::<_, Value>("source.load", &json!({})).await.unwrap_err();
     assert!(matches!(error, HostError::Shutdown));
 }
+
+/// Current resident set size in KiB, or 0 where `/proc/self/status` is unavailable.
+fn resident_kib() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("VmRSS:")?.split_whitespace().next()?.parse().ok()
+            })
+        })
+        .unwrap_or(0)
+}
+
+/// abi_stable never unloads a library, so a load/call/retire cycle may retain the library path and
+/// the root module, but it must not grow with each cycle. 200 cycles is enough for a per-cycle
+/// allocation to be obvious against allocator noise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "run after `cargo build -p sources`"]
+async fn repeated_load_call_retire_retains_only_the_library() {
+    let path = fixture_path();
+    let config = json!({ "jiosaavn": { "secretKey": "12345678", "mirror": true } });
+    let open = |identifier: &str| OpenRequest {
+        source: "jiosaavn".into(),
+        track: fixture_track(identifier),
+        direct: false,
+    };
+
+    // Warm the one-time library load and root module so they are not counted as per-cycle growth.
+    let plugin = LoadedPlugin::load(&path, callbacks(), &config).unwrap();
+    plugin.call::<_, Open>("track.open", &open("warm-up")).await.unwrap();
+    plugin.shutdown();
+    drop(plugin);
+
+    const CYCLES: u64 = 200;
+    let before = resident_kib();
+    for index in 0..CYCLES {
+        let plugin = LoadedPlugin::load(&path, callbacks(), &config).unwrap();
+        plugin.call::<_, Open>("track.open", &open(&format!("song-{index}"))).await.unwrap();
+        plugin.shutdown();
+        drop(plugin);
+    }
+    let after = resident_kib();
+    let growth = after.saturating_sub(before);
+
+    eprintln!(
+        "VmRSS {before} KiB -> {after} KiB over {CYCLES} load/call/retire cycles: \
+         {growth} KiB total, {} KiB per cycle",
+        growth / CYCLES
+    );
+    // A per-cycle leak of the 97-byte path and 32-byte root would stay under this, so the bound
+    // catches allocator-scale growth rather than the documented retention. The printed number is
+    // the measurement that matters.
+    assert!(growth < 32 * 1024, "unexpected {growth} KiB growth over {CYCLES} cycles");
+}
