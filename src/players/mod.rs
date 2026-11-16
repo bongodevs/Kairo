@@ -5,6 +5,7 @@ mod messages;
 mod patch;
 mod presence;
 mod registry;
+mod resume;
 mod settings;
 mod voice_bridge;
 

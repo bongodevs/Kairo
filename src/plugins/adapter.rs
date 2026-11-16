@@ -70,7 +70,9 @@ impl TrackSource for PluginSource {
             match open_plugin(&slot, &health, &http, &mirror, identity, request).await {
                 Ok(opened) => Ok(opened),
                 Err(error) => {
-                    let Some(identity) = fallback.filter(|_| fallback_eligible(&error)) else {
+                    let Some(identity) = fallback.filter(|_| {
+                        !player::source::fallback_suppressed() && fallback_eligible(&error)
+                    }) else {
                         return Err(error);
                     };
                     tracing::warn!(

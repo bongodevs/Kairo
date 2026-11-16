@@ -45,6 +45,15 @@ fn one_marker_is_taken_per_placeholder_open() {
 }
 
 #[tokio::test]
+async fn resume_retries_suppress_the_generated_fallback() {
+    assert!(!player::source::fallback_suppressed());
+    let suppressed =
+        player::source::without_fallback(async { player::source::fallback_suppressed() }).await;
+    assert!(suppressed);
+    assert!(!player::source::fallback_suppressed());
+}
+
+#[tokio::test]
 async fn generated_stream_decodes_thirty_seconds_of_silence() {
     let source = opened_source("jiosaavn", &reference(), &metadata());
     let runtime = tokio::runtime::Handle::current();

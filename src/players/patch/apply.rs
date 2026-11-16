@@ -179,6 +179,7 @@ pub(crate) async fn patch_player(
             None => {
                 let _ = player.player().clear_next().await;
                 player.set_next_track(None);
+                player.clear_next_placeholder();
             }
         }
     }
@@ -278,6 +279,7 @@ pub(crate) async fn patch_player(
         let played_source =
             track.as_ref().map(|track| source_name(track).to_owned()).unwrap_or_default();
         let played_reference = track.as_ref().map(|track| track.reference().clone());
+        let played_track = track.as_ref().map(Track::make_clone);
         let result = match track {
             Some(track) => player.player().play(track, false).await.map(|_| ()),
             None => player.player().stop().await,
@@ -289,8 +291,9 @@ pub(crate) async fn patch_player(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
         if started {
-            if placeholder && let Some(reference) = played_reference {
-                player.mark_placeholder(reference);
+            if placeholder && let Some(track) = played_track {
+                player.mark_placeholder(&track);
+                crate::players::resume::start(&player);
             }
             if state.metrics_endpoint.is_some() {
                 state.search_metrics.record_play(&played_source, &guild_id.to_string());
@@ -299,6 +302,7 @@ pub(crate) async fn patch_player(
             arm_next_track(&state, &player).await;
         } else {
             player.set_next_track(None);
+            player.clear_next_placeholder();
         }
     }
     player.notify_voice_frames().await;
@@ -316,10 +320,14 @@ async fn arm_next_track(state: &AppState, player: &PlayerEntry) {
     let keep = track.make_clone();
     let prepared = player.player().prepare_next(track).await;
     let placeholder = state.placeholders().take(&source, &reference);
-    player.set_next_track(Some(keep));
-    if matches!(prepared, Ok(true)) && placeholder {
-        player.mark_placeholder(reference);
+    if matches!(prepared, Ok(true)) {
+        if placeholder {
+            player.arm_placeholder(&keep);
+        } else {
+            player.clear_next_placeholder();
+        }
     }
+    player.set_next_track(Some(keep));
 }
 
 async fn resolve_track(

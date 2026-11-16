@@ -68,7 +68,13 @@ async fn run_events(
             continue;
         };
         match event {
-            PlayerEvent::TrackStart { .. } => {
+            PlayerEvent::TrackStart { track } => {
+                if let Some(current) = &current {
+                    current.promote_placeholder(track.reference());
+                    if current.is_placeholder(track.reference()) {
+                        crate::players::resume::start(current);
+                    }
+                }
                 store.send_lifecycle(&session_id, message).await;
                 if let Some(player) = player.upgrade() {
                     let playing = player

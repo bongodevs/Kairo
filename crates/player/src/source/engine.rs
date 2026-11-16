@@ -369,12 +369,14 @@ impl Sources {
         &self,
         reference: SourceReference,
     ) -> Result<Option<OpenedSource>, SourceError> {
-        self.engine.open(reference).await
+        let opened = self.engine.open(reference).await?;
+        Ok(opened.map(|opened| super::refresh::wrap(self, opened)))
     }
 
     /// Open a resolved track through the source named in its metadata.
     pub async fn open_track(&self, track: &Track) -> Result<Option<OpenedSource>, SourceError> {
-        self.engine.open_track(track).await
+        let opened = self.engine.open_track(track).await?;
+        Ok(opened.map(|opened| super::refresh::wrap(self, opened)))
     }
 
     /// Open one reference through one named source. Used by the fallback chain.

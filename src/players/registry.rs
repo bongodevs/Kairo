@@ -20,6 +20,7 @@ use voice::VoiceTarget;
 use voice::ids::{ChannelId, GuildId as VoiceGuildId, UserId};
 
 use super::frame_stats::{FrameCounter, FrameWindow};
+use super::resume::{Placeholders, Resume};
 use super::voice_bridge::{VoiceBridge, VoiceConnection};
 use crate::session::SessionStore;
 use crate::utils::locked;
@@ -55,6 +56,7 @@ pub(crate) struct PlayerEntry {
     guild_id: GuildId,
     player: Player,
     codecs: Arc<TrackCodecs>,
+    sources: Sources,
     guard: Mutex<Option<PlayerGuard>>,
     frames: Mutex<Option<FrameConsumer>>,
     pub(super) events: Mutex<Option<PlayerEvents>>,
@@ -63,7 +65,7 @@ pub(crate) struct PlayerEntry {
     filters: Mutex<Map<String, Value>>,
     crossfade: Mutex<Option<CrossfadeOptions>>,
     next_track: Mutex<Option<Track>>,
-    placeholder: Mutex<Option<SourceReference>>,
+    placeholders: Mutex<Placeholders>,
     pub(super) frame_counter: Arc<FrameCounter>,
     connected: Arc<AtomicBool>,
     playing: AtomicBool,
@@ -87,13 +89,14 @@ impl PlayerEntry {
         codecs: Arc<TrackCodecs>,
         config: PlayerConfig,
     ) -> Result<Arc<Self>, PlayerError> {
-        let (player, frames, events, guard) = spawn_player(sources, config)?;
+        let (player, frames, events, guard) = spawn_player(sources.clone(), config)?;
         let mut filters = Map::new();
         filters.insert(String::from("pluginFilters"), Value::Object(Map::new()));
         Ok(Arc::new(Self {
             guild_id,
             player,
             codecs,
+            sources,
             guard: Mutex::new(Some(guard)),
             frames: Mutex::new(Some(frames)),
             events: Mutex::new(Some(events)),
@@ -102,7 +105,7 @@ impl PlayerEntry {
             filters: Mutex::new(filters),
             crossfade: Mutex::new(config.crossfade),
             next_track: Mutex::new(None),
-            placeholder: Mutex::new(None),
+            placeholders: Mutex::new(Placeholders::default()),
             frame_counter: Arc::new(FrameCounter::new()),
             connected: Arc::new(AtomicBool::new(false)),
             playing: AtomicBool::new(false),
@@ -163,20 +166,50 @@ impl PlayerEntry {
         locked(&self.next_track).as_ref().map(Track::make_clone)
     }
 
-    /// Remember that the active track is generated silence rather than real media.
-    pub(super) fn mark_placeholder(&self, reference: SourceReference) {
-        *locked(&self.placeholder) = Some(reference);
+    pub(super) fn sources(&self) -> &Sources {
+        &self.sources
+    }
+
+    /// Remember that this track opened as generated silence, and the retry it owes.
+    pub(super) fn mark_placeholder(&self, track: &Track) {
+        locked(&self.placeholders).mark_playing(track);
+    }
+
+    /// Remember a prepared successor that opened as generated silence.
+    pub(super) fn arm_placeholder(&self, track: &Track) {
+        locked(&self.placeholders).arm_next(track);
+    }
+
+    /// The armed successor started; give it the playing slot before its start is reported.
+    pub(super) fn promote_placeholder(&self, reference: &SourceReference) -> bool {
+        locked(&self.placeholders).promote(reference)
     }
 
     pub(super) fn is_placeholder(&self, reference: &SourceReference) -> bool {
-        locked(&self.placeholder).as_ref().is_some_and(|marked| marked == reference)
+        locked(&self.placeholders).is_playing(reference)
+    }
+
+    /// Take the one pending retry. Only the first caller gets the track.
+    pub(super) fn take_resume(&self) -> Option<Resume> {
+        locked(&self.placeholders).take_resume()
+    }
+
+    pub(super) fn resume_current(&self, generation: u64) -> bool {
+        locked(&self.placeholders).is_generation(generation)
+    }
+
+    /// Real media replaced the silence; let later events for the track through again.
+    pub(super) fn finish_resume(&self, generation: u64) {
+        locked(&self.placeholders).finish(generation);
     }
 
     pub(super) fn clear_placeholder(&self, reference: &SourceReference) {
-        let mut marked = locked(&self.placeholder);
-        if marked.as_ref().is_some_and(|current| current == reference) {
-            *marked = None;
-        }
+        locked(&self.placeholders).clear_playing(reference);
+    }
+
+    /// The stored successor was dropped before it started.
+    pub(super) fn clear_next_placeholder(&self) {
+        locked(&self.placeholders).clear_next();
     }
 
     #[cfg(test)]

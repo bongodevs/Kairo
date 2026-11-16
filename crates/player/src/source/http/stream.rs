@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::error::Error;
+use std::fmt;
 use std::future::Future;
 use std::io::{self, SeekFrom};
 use std::pin::Pin;
@@ -155,6 +157,38 @@ impl RangeCache {
     }
 }
 
+/// An HTTP status that says the URL itself is no longer usable (expired or removed).
+#[derive(Debug)]
+struct SourceGoneError {
+    message: String,
+    status: u16,
+}
+
+impl fmt::Display for SourceGoneError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl Error for SourceGoneError {}
+
+fn status_error(message: String, status: u16) -> io::Error {
+    io::Error::other(SourceGoneError { message, status })
+}
+
+/// Whether this error is the host HTTP stack refusing or forgetting the media URL.
+pub(crate) fn source_gone(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<SourceGoneError>())
+        .is_some_and(|gone| matches!(gone.status, 403 | 410))
+}
+
+#[cfg(test)]
+pub(crate) fn gone_for_test(status: u16) -> io::Error {
+    status_error(format!("HTTP request returned status {status}"), status)
+}
+
 /// Body errors worth a reconnect. The reqwest stream maps hyper failures to `Other`, so that kind
 /// is retriable too; HTTP status and range errors are rejected before a body exists.
 fn is_retriable(error: &io::Error) -> bool {
@@ -221,9 +255,10 @@ pub(super) async fn open_at(
         }
         if position > 0 {
             if status != 206 {
-                return Err(io::Error::other(format!(
-                    "HTTP range request returned status {status}"
-                )));
+                return Err(status_error(
+                    format!("HTTP range request returned status {status}"),
+                    status,
+                ));
             }
             let (start, total) = content_range(&response)?;
             if start != position {
@@ -235,7 +270,7 @@ pub(super) async fn open_at(
             });
         }
         if !matches!(status, 200 | 203 | 206) {
-            return Err(io::Error::other(format!("HTTP request returned status {status}")));
+            return Err(status_error(format!("HTTP request returned status {status}"), status));
         }
         let content_length = response.content_length().or(known_length);
         return Ok(OpenedBody { body: response_body(response), content_length });
