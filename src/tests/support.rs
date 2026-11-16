@@ -136,7 +136,7 @@ pub(crate) fn sources_plugin() -> std::path::PathBuf {
     if installed.exists() {
         return installed;
     }
-    root.join("crates/sources/target/debug").join(format!(
+    root.join("crates/kairo-sources-plugin/target/debug").join(format!(
         "{}kairo_plugin_sources{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX

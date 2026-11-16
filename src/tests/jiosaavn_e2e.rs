@@ -24,7 +24,7 @@ use crate::plugins::PluginManager;
 use crate::test_support::{app_state_with_shared_sources, request, spawn_server, test_wave};
 
 #[tokio::test]
-#[ignore = "run after `cargo build` in crates/sources"]
+#[ignore = "run after `cargo build` in crates/kairo-sources-plugin"]
 async fn rest_load_decode_and_player_playback_preserve_jiosaavn_track_state() {
     let (endpoint, service) = mock_service().await;
     let root = plugin_root("jiosaavn-e2e");
@@ -95,7 +95,7 @@ async fn rest_load_decode_and_player_playback_preserve_jiosaavn_track_state() {
 }
 
 #[tokio::test]
-#[ignore = "run after `cargo build` in crates/sources"]
+#[ignore = "run after `cargo build` in crates/kairo-sources-plugin"]
 async fn mirror_playback_uses_the_first_configured_fallback() {
     let (endpoint, template, service) = mock_mirror_service().await;
     let root = plugin_root("jiosaavn-mirror");
@@ -139,7 +139,7 @@ async fn mirror_playback_uses_the_first_configured_fallback() {
 }
 
 #[tokio::test]
-#[ignore = "run after `cargo build` in crates/sources"]
+#[ignore = "run after `cargo build` in crates/kairo-sources-plugin"]
 async fn a_down_source_answers_busy_without_calling_the_plugin() {
     let (endpoint, connections, service) = mock_dropping_service().await;
     let root = plugin_root("jiosaavn-down");
@@ -175,7 +175,7 @@ async fn a_down_source_answers_busy_without_calling_the_plugin() {
 }
 
 #[tokio::test]
-#[ignore = "run after `cargo build` in crates/sources"]
+#[ignore = "run after `cargo build` in crates/kairo-sources-plugin"]
 async fn a_failed_plugin_open_plays_generated_silence() {
     let endpoint = mock_status_service(500).await;
     let root = plugin_root("jiosaavn-silence");

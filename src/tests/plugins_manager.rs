@@ -116,7 +116,7 @@ fn manifest_validation_checks_identity_version_and_source_names() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "run after `cargo build` in crates/sources"]
+#[ignore = "run after `cargo build` in crates/kairo-sources-plugin"]
 async fn real_fixture_is_staged_loaded_and_reported() {
     let root = root("plugin-manager");
     tokio::fs::create_dir_all(&root).await.expect("plugin root");
@@ -272,7 +272,7 @@ async fn loaded_sources(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "run after `cargo build` in crates/sources"]
+#[ignore = "run after `cargo build` in crates/kairo-sources-plugin"]
 async fn real_fixture_handles_concurrent_search_http_load() {
     const CALLS: usize = 32;
 
@@ -307,7 +307,7 @@ async fn real_fixture_handles_concurrent_search_http_load() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "run after `cargo build` in crates/sources"]
+#[ignore = "run after `cargo build` in crates/kairo-sources-plugin"]
 async fn shutdown_waits_for_in_flight_search_calls() {
     const CALLS: usize = 8;
 
@@ -376,7 +376,7 @@ async fn real_fixture_reload_keeps_serving_new_calls() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "run after `cargo build` in crates/sources"]
+#[ignore = "run after `cargo build` in crates/kairo-sources-plugin"]
 async fn reload_cycles_do_not_hang_or_lose_state() {
     for cycle in 0..3 {
         let root = root(&format!("plugin-reload-{cycle}"));

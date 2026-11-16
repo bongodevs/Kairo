@@ -40,8 +40,8 @@ providers = [] # ordered mirror templates, e.g. "youtube:ytsearch:%QUERY%"
 directory = "plugins"
 
 # The bundled providers live in the separate `kairo-sources-plugin` repository, checked out at
-# `crates/sources`. Build it and copy the artifact, then uncomment this block:
-#   cargo build --manifest-path crates/sources/Cargo.toml
+# `crates/kairo-sources-plugin`. Build it and copy the artifact, then uncomment this block:
+#   cargo build --manifest-path crates/kairo-sources-plugin/Cargo.toml
 # `repo` and `tag` make the host install the release asset at startup.
 # [[plugin]]
 # name = "sources"
