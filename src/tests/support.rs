@@ -224,6 +224,7 @@ pub(crate) fn app_state_with_shared_sources(
         request_log: crate::config::RequestLoggingConfig::default(),
         shutdown: tokio::sync::watch::channel(false).0,
         plugins: Arc::new(crate::plugins::PluginManager::empty()),
+        placeholders: Arc::new(crate::plugins::PlaceholderLog::default()),
     }
 }
 

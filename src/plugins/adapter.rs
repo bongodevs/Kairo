@@ -53,66 +53,100 @@ impl TrackSource for PluginSource {
             Ok(request) => request,
             Err(error) => return Box::pin(async move { Err(error) }),
         };
-        request.direct = mirror::depth() > 0;
+        let depth = mirror::depth();
+        request.direct = depth > 0;
         let slot = Arc::clone(&self.slot);
         let health = Arc::clone(&self.health);
         let http = self.http.clone();
         let mirror = Arc::clone(&self.mirror);
+        let placeholders = self.mirror.placeholders();
         let identity = PlaybackIdentity {
             source: self.name.clone(),
             reference: track.reference().clone(),
             metadata: track.info().map_or_else(SourceMetadata::default, SourceMetadata::from),
         };
+        let fallback = (depth == 0).then(|| identity.clone());
         Box::pin(async move {
-            let opened = call_open(&slot, &health, &identity.source, &request).await?;
-            match opened {
-                Open::Url { url, headers, seekable, length_ms: _, content_type } => {
-                    open_url(&http, identity, url, headers, seekable, content_type).await
+            match open_plugin(&slot, &health, &http, &mirror, identity, request).await {
+                Ok(opened) => Ok(opened),
+                Err(error) => {
+                    let Some(identity) = fallback.filter(|_| fallback_eligible(&error)) else {
+                        return Err(error);
+                    };
+                    tracing::warn!(
+                        source = %identity.source,
+                        track = identity.reference.identifier(),
+                        %error,
+                        "source open failed; playing generated silence"
+                    );
+                    placeholders.record(&identity.source, &identity.reference);
+                    Ok(Some(super::placeholder::opened_source(
+                        &identity.source,
+                        &identity.reference,
+                        &identity.metadata,
+                    )))
                 }
-                Open::Mirror { isrc, title, author, length_ms: _ } if !request.direct => {
-                    let spec = MirrorSpec { isrc, title, author };
-                    match mirror
-                        .open(
-                            &identity.source,
-                            identity.reference.clone(),
-                            identity.metadata.clone(),
-                            &spec,
-                        )
-                        .await
-                    {
-                        Ok(opened) => Ok(Some(opened)),
-                        Err(mirror_error) => {
-                            let mut direct = request;
-                            direct.direct = true;
-                            match call_open(&slot, &health, &identity.source, &direct).await? {
-                                Open::Url {
-                                    url,
-                                    headers,
-                                    seekable,
-                                    length_ms: _,
-                                    content_type,
-                                } => {
-                                    open_url(&http, identity, url, headers, seekable, content_type)
-                                        .await
-                                }
-                                Open::Mirror { .. } => Err(mirror_error),
-                                _ => Err(SourceError::fault(
-                                    &identity.source,
-                                    "plugin returned an unknown direct open type",
-                                )),
-                            }
-                        }
-                    }
-                }
-                Open::Mirror { .. } => Err(SourceError::unsupported(
-                    "plugin returned a mirror for a direct open request",
-                )),
-                _ => Err(SourceError::fault(
-                    &identity.source,
-                    "plugin returned an unknown open type",
-                )),
             }
         })
+    }
+}
+
+/// Whether a failed open should fall back to generated silence. Configuration mistakes still fail.
+fn fallback_eligible(error: &SourceError) -> bool {
+    !matches!(
+        error,
+        SourceError::DuplicateSource { .. }
+            | SourceError::UnknownSource { .. }
+            | SourceError::InvalidPlaybackResult { .. }
+            | SourceError::UnresolvedTrack
+    )
+}
+
+async fn open_plugin(
+    slot: &PluginSlot,
+    health: &SourceHealth,
+    http: &HttpSource,
+    mirror: &MirrorChain,
+    identity: PlaybackIdentity,
+    request: OpenRequest,
+) -> Result<Option<OpenedSource>, SourceError> {
+    let opened = call_open(slot, health, &identity.source, &request).await?;
+    match opened {
+        Open::Url { url, headers, seekable, length_ms: _, content_type } => {
+            open_url(http, identity, url, headers, seekable, content_type).await
+        }
+        Open::Mirror { isrc, title, author, length_ms: _ } if !request.direct => {
+            let spec = MirrorSpec { isrc, title, author };
+            match mirror
+                .open(
+                    &identity.source,
+                    identity.reference.clone(),
+                    identity.metadata.clone(),
+                    &spec,
+                )
+                .await
+            {
+                Ok(opened) => Ok(Some(opened)),
+                Err(mirror_error) => {
+                    let mut direct = request;
+                    direct.direct = true;
+                    match call_open(slot, health, &identity.source, &direct).await? {
+                        Open::Url { url, headers, seekable, length_ms: _, content_type } => {
+                            open_url(http, identity, url, headers, seekable, content_type).await
+                        }
+                        Open::Mirror { .. } => Err(mirror_error),
+                        _ => Err(SourceError::fault(
+                            &identity.source,
+                            "plugin returned an unknown direct open type",
+                        )),
+                    }
+                }
+            }
+        }
+        Open::Mirror { .. } => {
+            Err(SourceError::unsupported("plugin returned a mirror for a direct open request"))
+        }
+        _ => Err(SourceError::fault(&identity.source, "plugin returned an unknown open type")),
     }
 }
 

@@ -23,7 +23,7 @@ use player::track::codec::TrackCodecs;
 use crate::config::{Config, RequestLoggingConfig, resolve_providers};
 use crate::error;
 use crate::players::FilterPolicy;
-use crate::plugins::PluginManager;
+use crate::plugins::{PlaceholderLog, PluginManager};
 use crate::rest::middleware::auth;
 use crate::rest::middleware::request_log;
 use crate::rest::routes::{
@@ -55,6 +55,7 @@ pub(crate) struct AppState {
     pub(crate) request_log: RequestLoggingConfig,
     pub(crate) shutdown: tokio::sync::watch::Sender<bool>,
     pub(crate) plugins: Arc<PluginManager>,
+    pub(crate) placeholders: Arc<PlaceholderLog>,
 }
 
 pub(crate) struct CpuSampler {
@@ -72,6 +73,10 @@ impl AppState {
 
     pub(crate) fn plugins(&self) -> &PluginManager {
         &self.plugins
+    }
+
+    pub(crate) fn placeholders(&self) -> &PlaceholderLog {
+        &self.placeholders
     }
 
     pub(crate) fn codecs(&self) -> &TrackCodecs {
@@ -130,7 +135,7 @@ pub async fn serve(config: &Config) -> anyhow::Result<()> {
             .await
             .context("configure plugins")?,
     );
-    let sources = match build(config, route_planner.as_ref(), &plugins) {
+    let (sources, placeholders) = match build(config, route_planner.as_ref(), &plugins) {
         Ok(sources) => sources,
         Err(error) => {
             plugins.shutdown().await;
@@ -167,6 +172,7 @@ pub async fn serve(config: &Config) -> anyhow::Result<()> {
         request_log: config.logging.request.clone(),
         shutdown,
         plugins: Arc::clone(&plugins),
+        placeholders,
     };
     let sessions = state.sessions.clone();
     let app = router(state);
@@ -361,7 +367,7 @@ fn build(
     config: &Config,
     route_planner: Option<&Arc<RoutePlanner>>,
     plugins: &PluginManager,
-) -> anyhow::Result<Arc<Sources>> {
+) -> anyhow::Result<(Arc<Sources>, Arc<PlaceholderLog>)> {
     let timeouts = config.lavalink.server.timeouts;
     let local_address: Option<LocalAddressProvider> = route_planner.map(|planner| {
         let planner = Arc::clone(planner);
@@ -397,7 +403,7 @@ fn build(
     providers.set_fallback_codec(ExtendedTrackCodec);
     let sources = Arc::new(providers.build(source_config).context("configure audio sources")?);
     mirror.install(&sources);
-    Ok(sources)
+    Ok((sources, mirror.placeholders()))
 }
 
 #[cfg(test)]

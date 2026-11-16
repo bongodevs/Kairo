@@ -8,7 +8,9 @@ mod load;
 mod manager;
 mod mirror;
 mod native;
+mod placeholder;
 mod slot;
 mod stage;
 
 pub(crate) use manager::{PluginEntry, PluginManager, ReloadError};
+pub(crate) use placeholder::PlaceholderLog;

@@ -177,3 +177,19 @@ fn lifecycle_logs_name_the_session_guild_and_track_but_not_the_payload() {
     assert!(text.contains("severity=\"suspicious\""), "{text}");
     assert!(!text.contains("encoded"), "{text}");
 }
+
+#[test]
+fn placeholder_failure_is_one_canonical_common_exception() {
+    let text = placeholder_exception(&track(), GuildId::new(42), &TrackCodecs::new())
+        .expect("placeholder exception");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+
+    assert_eq!(value["op"], "event");
+    assert_eq!(value["type"], "TrackExceptionEvent");
+    assert_eq!(value["guildId"], "42");
+    assert_eq!(value["exception"]["message"], PLACEHOLDER_MESSAGE);
+    assert_eq!(value["exception"]["severity"], "common");
+    assert_eq!(value["exception"]["cause"], PLACEHOLDER_MESSAGE);
+    assert_eq!(value["exception"]["causeStackTrace"], "");
+    assert!(value["track"]["encoded"].is_string());
+}

@@ -13,7 +13,7 @@ use player::effects::CrossfadeOptions;
 use player::playback::{
     Player, PlayerConfig, PlayerError, PlayerEvents, PlayerGuard, spawn_player,
 };
-use player::source::Sources;
+use player::source::{SourceReference, Sources};
 use player::track::Track;
 use player::track::codec::TrackCodecs;
 use voice::VoiceTarget;
@@ -63,6 +63,7 @@ pub(crate) struct PlayerEntry {
     filters: Mutex<Map<String, Value>>,
     crossfade: Mutex<Option<CrossfadeOptions>>,
     next_track: Mutex<Option<Track>>,
+    placeholder: Mutex<Option<SourceReference>>,
     pub(super) frame_counter: Arc<FrameCounter>,
     connected: Arc<AtomicBool>,
     playing: AtomicBool,
@@ -101,6 +102,7 @@ impl PlayerEntry {
             filters: Mutex::new(filters),
             crossfade: Mutex::new(config.crossfade),
             next_track: Mutex::new(None),
+            placeholder: Mutex::new(None),
             frame_counter: Arc::new(FrameCounter::new()),
             connected: Arc::new(AtomicBool::new(false)),
             playing: AtomicBool::new(false),
@@ -159,6 +161,22 @@ impl PlayerEntry {
 
     pub(super) fn next_track(&self) -> Option<Track> {
         locked(&self.next_track).as_ref().map(Track::make_clone)
+    }
+
+    /// Remember that the active track is generated silence rather than real media.
+    pub(super) fn mark_placeholder(&self, reference: SourceReference) {
+        *locked(&self.placeholder) = Some(reference);
+    }
+
+    pub(super) fn is_placeholder(&self, reference: &SourceReference) -> bool {
+        locked(&self.placeholder).as_ref().is_some_and(|marked| marked == reference)
+    }
+
+    pub(super) fn clear_placeholder(&self, reference: &SourceReference) {
+        let mut marked = locked(&self.placeholder);
+        if marked.as_ref().is_some_and(|current| current == reference) {
+            *marked = None;
+        }
     }
 
     #[cfg(test)]

@@ -3,6 +3,7 @@ use std::sync::{Arc, Weak};
 use serde_json::json;
 
 use player::playback::{ExceptionSeverity, PlayerEvent, PlayerEvents, TrackEndReason};
+use player::track::TrackSnapshot;
 use player::track::codec::TrackCodecs;
 
 use super::messages::player_update_message;
@@ -10,6 +11,9 @@ use super::registry::PlayerEntry;
 use crate::session::SessionStore;
 use crate::tracks::encode_snapshot;
 use crate::utils::locked;
+
+/// Reported once when generated silence runs out instead of a track end.
+const PLACEHOLDER_MESSAGE: &str = "No source could play this track.";
 
 impl PlayerEntry {
     pub(crate) fn start_events(self: &Arc<Self>, store: Arc<SessionStore>, session_id: String) {
@@ -33,6 +37,33 @@ async fn run_events(
 ) {
     while let Some(event) = events.recv().await {
         log_event(&session_id, guild_id, &event);
+        let current = player.upgrade();
+        if let Some(current) = &current {
+            match &event {
+                PlayerEvent::TrackEnd { track, reason } => {
+                    if current.is_placeholder(track.reference()) {
+                        current.clear_placeholder(track.reference());
+                        if matches!(reason, TrackEndReason::Crossfade | TrackEndReason::Gapless) {
+                            current.set_next_track(None);
+                        }
+                        store.set_player_playing(&session_id, guild_id, false);
+                        if matches!(reason, TrackEndReason::Finished | TrackEndReason::LoadFailed)
+                            && let Some(message) = placeholder_exception(track, guild_id, &codecs)
+                        {
+                            store.send_lifecycle(&session_id, message).await;
+                        }
+                        continue;
+                    }
+                }
+                PlayerEvent::TrackException { track, .. }
+                | PlayerEvent::TrackStuck { track, .. }
+                    if current.is_placeholder(track.reference()) =>
+                {
+                    continue;
+                }
+                _ => {}
+            }
+        }
         let Some(message) = event_message(&event, guild_id, &codecs) else {
             continue;
         };
@@ -158,6 +189,26 @@ fn event_message(
         PlayerEvent::Paused { .. } | PlayerEvent::Resumed { .. } => return None,
     };
     serde_json::to_string(&value).ok()
+}
+
+fn placeholder_exception(
+    track: &TrackSnapshot,
+    guild_id: super::GuildId,
+    codecs: &TrackCodecs,
+) -> Option<String> {
+    event_message(
+        &PlayerEvent::TrackException {
+            track: track.clone(),
+            exception: player::playback::TrackException {
+                message: Some(String::from(PLACEHOLDER_MESSAGE)),
+                severity: ExceptionSeverity::Common,
+                cause: String::from(PLACEHOLDER_MESSAGE),
+                cause_stack_trace: String::new(),
+            },
+        },
+        guild_id,
+        codecs,
+    )
 }
 
 fn severity(severity: ExceptionSeverity) -> &'static str {

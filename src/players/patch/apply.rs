@@ -184,7 +184,7 @@ pub(crate) async fn patch_player(
     }
     let arm_next = !replacing_track && (next_track_present || crossfade_present);
     if arm_next {
-        arm_next_track(&player).await;
+        arm_next_track(&state, &player).await;
     }
     if transition_now {
         match player.player().transition_now().await {
@@ -277,19 +277,26 @@ pub(crate) async fn patch_player(
         let started = track.is_some();
         let played_source =
             track.as_ref().map(|track| source_name(track).to_owned()).unwrap_or_default();
+        let played_reference = track.as_ref().map(|track| track.reference().clone());
         let result = match track {
             Some(track) => player.player().play(track, false).await.map(|_| ()),
             None => player.player().stop().await,
         };
+        let placeholder = played_reference
+            .as_ref()
+            .is_some_and(|reference| state.placeholders().take(&played_source, reference));
         if result.is_err() {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
         if started {
+            if placeholder && let Some(reference) = played_reference {
+                player.mark_placeholder(reference);
+            }
             if state.metrics_endpoint.is_some() {
                 state.search_metrics.record_play(&played_source, &guild_id.to_string());
             }
             send_player_update(&state, &session_id, &player).await;
-            arm_next_track(&player).await;
+            arm_next_track(&state, &player).await;
         } else {
             player.set_next_track(None);
         }
@@ -300,13 +307,19 @@ pub(crate) async fn patch_player(
 
 /// Arm the stored successor against the player's current state. The track stays stored so it can be
 /// listed and retried; the player only reports `false` when no transition applies right now.
-async fn arm_next_track(player: &PlayerEntry) {
+async fn arm_next_track(state: &AppState, player: &PlayerEntry) {
     let Some(track) = player.take_next_track() else {
         return;
     };
+    let source = source_name(&track).to_owned();
+    let reference = track.reference().clone();
     let keep = track.make_clone();
-    let _ = player.player().prepare_next(track).await;
+    let prepared = player.player().prepare_next(track).await;
+    let placeholder = state.placeholders().take(&source, &reference);
     player.set_next_track(Some(keep));
+    if matches!(prepared, Ok(true)) && placeholder {
+        player.mark_placeholder(reference);
+    }
 }
 
 async fn resolve_track(

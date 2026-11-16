@@ -4,6 +4,7 @@ use player::source::{OpenedSource, SourceError, SourceMetadata, SourceReference,
 use player::track::UNKNOWN_AUTHOR;
 
 use super::health::is_busy;
+use super::placeholder::PlaceholderLog;
 use crate::config::{FallbackPlaceholder, FallbackProvider};
 
 tokio::task_local! {
@@ -21,11 +22,21 @@ pub(super) struct MirrorSpec {
 pub(crate) struct MirrorChain {
     providers: Vec<FallbackProvider>,
     sources: OnceLock<Weak<Sources>>,
+    placeholders: Arc<PlaceholderLog>,
 }
 
 impl MirrorChain {
     pub(super) fn new(providers: Vec<FallbackProvider>) -> Self {
-        Self { providers, sources: OnceLock::new() }
+        Self {
+            providers,
+            sources: OnceLock::new(),
+            placeholders: Arc::new(PlaceholderLog::default()),
+        }
+    }
+
+    /// The track-level markers left by generated silence.
+    pub(crate) fn placeholders(&self) -> Arc<PlaceholderLog> {
+        Arc::clone(&self.placeholders)
     }
 
     /// Attach the final registry. A weak reference keeps the plugin source -> chain -> registry

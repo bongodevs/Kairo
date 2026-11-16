@@ -6,7 +6,7 @@ use super::*;
 use crate::config::ResamplingQualityConfig;
 #[test]
 fn default_setup_registers_only_http() {
-    let sources = build(&Config::default(), None, &PluginManager::empty()).expect("sources");
+    let (sources, _) = build(&Config::default(), None, &PluginManager::empty()).expect("sources");
     assert_eq!(sources.names().collect::<Vec<_>>(), ["http"]);
 }
 
@@ -14,7 +14,7 @@ fn default_setup_registers_only_http() {
 fn both_direct_transports_can_be_disabled() {
     let mut config = Config::default();
     config.lavalink.server.sources.http = false;
-    let sources = build(&config, None, &PluginManager::empty()).expect("sources");
+    let (sources, _) = build(&config, None, &PluginManager::empty()).expect("sources");
     assert_eq!(sources.names().collect::<Vec<_>>(), Vec::<&str>::new());
 }
 
@@ -22,7 +22,7 @@ fn both_direct_transports_can_be_disabled() {
 fn local_transport_registers_before_http() {
     let mut config = Config::default();
     config.lavalink.server.sources.local = true;
-    let sources = build(&config, None, &PluginManager::empty()).expect("sources");
+    let (sources, _) = build(&config, None, &PluginManager::empty()).expect("sources");
     assert_eq!(sources.names().collect::<Vec<_>>(), ["local", "http"]);
 }
 
@@ -47,7 +47,7 @@ async fn the_configured_socket_timeout_reaches_the_http_source() {
 
     let mut config = Config::default();
     config.lavalink.server.timeouts.socket_timeout_ms = 50;
-    let sources = build(&config, None, &PluginManager::empty()).expect("sources");
+    let (sources, _) = build(&config, None, &PluginManager::empty()).expect("sources");
 
     let started = Instant::now();
     let outcome = sources.load(SourceReference::new(format!("http://{address}/track.wav"))).await;
@@ -104,7 +104,7 @@ async fn the_configured_http_proxy_carries_generic_http_requests() {
         proxy_user: String::new(),
         proxy_password: String::new(),
     });
-    let sources = build(&config, None, &PluginManager::empty()).expect("sources");
+    let (sources, _) = build(&config, None, &PluginManager::empty()).expect("sources");
     let outcome = sources.load(SourceReference::new("http://192.0.2.1:9/track.wav")).await;
     assert!(matches!(outcome, LoadOutcome::Track(_)), "proxy load failed: {outcome:?}");
     let request = proxy.await.expect("proxy task");
@@ -168,7 +168,7 @@ async fn an_enabled_route_planner_binds_generic_http_requests() {
     let planner = RoutePlanner::build(config.lavalink.server.ratelimit.as_ref())
         .expect("config")
         .expect("planner");
-    let sources = build(&config, Some(&std::sync::Arc::new(planner)), &PluginManager::empty())
+    let (sources, _) = build(&config, Some(&std::sync::Arc::new(planner)), &PluginManager::empty())
         .expect("sources");
     let outcome = sources.load(SourceReference::new(format!("http://{address}/track.wav"))).await;
     assert!(matches!(outcome, LoadOutcome::Track(_)), "planner load failed: {outcome:?}");
