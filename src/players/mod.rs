@@ -1,8 +1,12 @@
 mod events;
 mod filters;
+
 mod frame_stats;
 mod messages;
 mod patch;
+#[cfg(test)]
+#[path = "../tests/player_placeholder_events.rs"]
+mod placeholder_events;
 mod presence;
 mod registry;
 mod resume;

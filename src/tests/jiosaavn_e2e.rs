@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
@@ -16,6 +17,7 @@ use player::buffer::{BufferRead, FrameBufferConfig};
 use player::playback::{PlayerConfig, spawn_player};
 use player::source::{LoadOutcome, ProviderManager, SourceConfig, SourceReference};
 use player::track::codec::DecodeTrack;
+use player::track::{SourceData, Track, TrackInfo};
 
 use crate::config::{FallbackPlaceholder, FallbackProvider, PluginConfig};
 use crate::plugins::PluginManager;
@@ -136,6 +138,103 @@ async fn mirror_playback_uses_the_first_configured_fallback() {
     tokio::fs::remove_dir_all(root).await.expect("cleanup");
 }
 
+#[tokio::test]
+#[ignore = "run after `cargo build` in crates/sources"]
+async fn a_down_source_answers_busy_without_calling_the_plugin() {
+    let (endpoint, connections, service) = mock_dropping_service().await;
+    let root = plugin_root("jiosaavn-down");
+    let plugin = plugin_config(&endpoint, false);
+    install_fixture(&plugin, &root).await;
+    let manager = PluginManager::load(&[plugin], &root).await.expect("plugin manager");
+    let mut providers = ProviderManager::new();
+    manager
+        .register_sources(&mut providers, ["http", "local"], Vec::new())
+        .expect("register plugin");
+    let sources =
+        Arc::new(providers.build(SourceConfig { http: false, local: false }).expect("sources"));
+
+    for _ in 0..5 {
+        let outcome = sources.load(SourceReference::new("jiosaavn:song-id")).await;
+        assert!(matches!(outcome, LoadOutcome::Error(_)), "{outcome:?}");
+    }
+    let reached = connections.load(Ordering::SeqCst);
+    assert!(reached >= 5, "the plugin was never called");
+
+    let LoadOutcome::Error(error) = sources.load(SourceReference::new("jiosaavn:song-id")).await
+    else {
+        panic!("expected the busy error");
+    };
+    assert!(error.to_string().contains("temporarily unavailable"), "{error}");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(connections.load(Ordering::SeqCst), reached, "a closed source was still called");
+
+    drop(sources);
+    service.abort();
+    manager.shutdown().await;
+    tokio::fs::remove_dir_all(root).await.expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore = "run after `cargo build` in crates/sources"]
+async fn a_failed_plugin_open_plays_generated_silence() {
+    let endpoint = mock_status_service(500).await;
+    let root = plugin_root("jiosaavn-silence");
+    let plugin = plugin_config(&endpoint, false);
+    install_fixture(&plugin, &root).await;
+    let manager = PluginManager::load(&[plugin], &root).await.expect("plugin manager");
+    let mut providers = ProviderManager::new();
+    let mirror = manager
+        .register_sources(&mut providers, ["http", "local"], Vec::new())
+        .expect("register plugin");
+    let placeholders = mirror.placeholders();
+    let sources =
+        Arc::new(providers.build(SourceConfig { http: false, local: false }).expect("sources"));
+    mirror.install(&sources);
+
+    let track = plugin_track();
+    let mut opened = sources
+        .open_track(&track)
+        .await
+        .expect("a failed open falls back to silence")
+        .expect("generated silence");
+    assert_eq!(opened.source_name(), "jiosaavn");
+    assert_eq!(opened.reference().identifier(), "song-id");
+    assert_eq!(opened.hints().mime_type.as_deref(), Some("audio/ogg"));
+    assert_eq!(opened.hints().file_extension.as_deref(), Some("ogg"));
+    let mut magic = [0; 4];
+    opened.read(&mut magic).await.expect("read silence");
+    assert_eq!(&magic, b"OggS");
+    assert!(placeholders.take("jiosaavn", track.reference()), "no placeholder marker");
+
+    let suppressed = player::source::without_fallback(sources.open_track(&track)).await;
+    assert!(suppressed.is_err(), "a suppressed retry must report the real failure");
+    assert!(!placeholders.take("jiosaavn", track.reference()), "a retry recorded a placeholder");
+
+    drop(sources);
+    manager.shutdown().await;
+    tokio::fs::remove_dir_all(root).await.expect("cleanup");
+}
+
+fn plugin_track() -> Track {
+    Track::from_parts(
+        SourceReference::new("song-id"),
+        TrackInfo {
+            identifier: String::from("song-id"),
+            is_seekable: true,
+            author: String::from("Artist"),
+            length: Some(player::decode::Millis::new(30_000)),
+            is_stream: false,
+            title: String::from("Song"),
+            uri: Some(String::from("https://www.jiosaavn.com/song/demo/song-id")),
+            source_name: String::from("jiosaavn"),
+            artwork_url: None,
+            isrc: None,
+        },
+        SourceData::None,
+        player::decode::Millis::default(),
+    )
+}
+
 fn plugin_root(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("kairo-{name}-{}", std::process::id()))
 }
@@ -235,6 +334,45 @@ async fn mock_mirror_service() -> (Url, String, tokio::task::JoinHandle<Vec<Stri
     let endpoint = Url::parse(&format!("http://{address}/api.php")).expect("endpoint");
     let template = format!("http://{address}/mirror.wav?q=%QUERY%");
     (endpoint, template, service)
+}
+
+/// Accept every request and drop the connection without answering. A plugin call that reaches this
+/// listener fails with an unavailable transport error, which closes its breaker after five calls.
+async fn mock_dropping_service() -> (Url, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind((IpAddr::from([127, 0, 0, 1]), 0)).await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&connections);
+    let service = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            counter.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    let endpoint = Url::parse(&format!("http://{address}/api.php")).expect("endpoint");
+    (endpoint, connections, service)
+}
+
+/// Answer every request with one fixed status so a plugin open fails on the wire.
+async fn mock_status_service(status: u16) -> Url {
+    let listener = TcpListener::bind((IpAddr::from([127, 0, 0, 1]), 0)).await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let mut request = vec![0_u8; 8 * 1024];
+            let _ = stream.read(&mut request).await;
+            let body = b"unavailable";
+            let head = format!(
+                "HTTP/1.1 {status} Unavailable\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(body).await;
+        }
+    });
+    Url::parse(&format!("http://{address}/api.php")).expect("endpoint")
 }
 
 fn encrypted_url(url: &str, key: &[u8; 8]) -> String {
