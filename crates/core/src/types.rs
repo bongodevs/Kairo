@@ -25,8 +25,8 @@ pub struct AudioFormat {
 
 impl AudioFormat {
     #[must_use]
-    pub fn new(sample_rate: u32, channels: usize) -> Option<Self> {
-        (sample_rate > 0 && channels > 0).then_some(Self { sample_rate, channels })
+    pub const fn new(sample_rate: u32, channels: usize) -> Option<Self> {
+        if sample_rate > 0 && channels > 0 { Some(Self { sample_rate, channels }) } else { None }
     }
 }
 
@@ -72,7 +72,7 @@ macro_rules! id_newtype {
 
         impl serde::Serialize for $name {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                serializer.serialize_str(&self.0.to_string())
+                serializer.collect_str(&self.0)
             }
         }
     };
