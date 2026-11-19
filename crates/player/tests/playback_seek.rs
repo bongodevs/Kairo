@@ -26,10 +26,8 @@ async fn disabled_seek_ghosting_clears_old_audio_immediately() {
         tokio::task::yield_now().await;
     }
     assert!(fixture.player.seek(Millis::new(2_000)).await.expect("seek"));
-    assert_eq!(
-        fixture.frames.read(&mut [0; MAX_PACKET_BYTES]).expect("read after seek"),
-        BufferRead::Empty
-    );
+    // the worker clears the queue before seek returns, but the replacement can already be
+    // queued, so the first frame served is the signal, not an empty read
     let (replacement, _) = next_frame(&mut fixture.frames).await;
     assert!(replacement.position >= Millis::new(2_000));
     fixture.player.stop().await.expect("stop");
