@@ -34,6 +34,12 @@ use crate::session::SessionStore;
 use crate::ws;
 const API_VERSION: &str = "4";
 
+/// How long a stop signal waits for open requests and sessions before aborting them.
+///
+/// Without this, one stuck request (a plugin call on an endpoint that never answers) holds the
+/// process open for its own timeout.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+
 pub(crate) const MAX_REQUEST_BODY: usize = 2 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -101,6 +107,16 @@ impl AppState {
 }
 
 pub async fn serve(config: &Config) -> anyhow::Result<()> {
+    // Watch from the first line: a signal that arrives while a plugin is loading must end in a
+    // clean stop, not in the default handler abandoning an armed guard marker.
+    let (shutdown, stop_seen) = tokio::sync::watch::channel(false);
+    let notice = shutdown.clone();
+    tokio::spawn(async move {
+        await_stop_signal().await;
+        tracing::info!("shutdown signal received, closing client sessions");
+        let _ = notice.send(true);
+    });
+
     let cores = std::thread::available_parallelism().map_or(1, |count| count.get() as u32);
     let metrics_endpoint = config
         .metrics
@@ -115,8 +131,6 @@ pub async fn serve(config: &Config) -> anyhow::Result<()> {
             config.metrics.prometheus.endpoint
         );
     }
-    let (shutdown, stop_seen) = tokio::sync::watch::channel(false);
-    let notice = shutdown.clone();
     let route_planner =
         RoutePlanner::build(config.lavalink.server.ratelimit.as_ref())?.map(Arc::new);
     let player_config = player_config(config)?;
@@ -186,19 +200,37 @@ pub async fn serve(config: &Config) -> anyhow::Result<()> {
         "REST and WebSocket server listening"
     );
 
-    let serve = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(async move {
-            await_stop_signal().await;
-            tracing::info!("shutdown signal received, closing client sessions");
-            let _ = notice.send(true);
-        })
-        .await;
+    let mut stop = stop_seen.clone();
+    let mut serve = Box::pin(
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(async move {
+                stop.wait_for(|seen| *seen).await.ok();
+            })
+            .into_future(),
+    );
+    let mut open = stop_seen.clone();
+    let request_grace = async move {
+        open.wait_for(|seen| *seen).await.ok();
+        tokio::time::sleep(SHUTDOWN_GRACE).await;
+    };
+    let result = tokio::select! {
+        result = &mut serve => result.context("serve http"),
+        () = request_grace => {
+            tracing::warn!("requests still open after the shutdown grace window; closing anyway");
+            Ok(())
+        }
+    };
+    // Stop accepting and release the listener. Connection tasks are detached by axum, but the
+    // plugin drain below has its own cap, so a stuck request cannot hold the process open.
+    drop(serve);
     if *stop_seen.borrow() {
-        sessions.wait_until_idle().await;
-        tracing::info!("all client sessions drained");
+        match tokio::time::timeout(SHUTDOWN_GRACE, sessions.wait_until_idle()).await {
+            Ok(()) => tracing::info!("all client sessions drained"),
+            Err(_) => tracing::warn!("client sessions still open after the shutdown grace window"),
+        }
     }
     plugins.shutdown().await;
-    serve.context("serve http")
+    result
 }
 
 pub(crate) fn router(state: AppState) -> Router {

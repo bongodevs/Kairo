@@ -19,7 +19,10 @@ use super::stage;
 use crate::config::{FallbackProvider, PluginConfig};
 
 /// How long a reload waits for calls that still hold the previous copy.
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// A call that outlives the window keeps the old copy alive in the background; it is never
+/// dropped while a call is inside it.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub(crate) struct PluginManager {
@@ -282,14 +285,23 @@ impl PluginManager {
         if plugins.is_empty() {
             return;
         }
-        if let Err(error) = tokio::task::spawn_blocking(move || {
+        match tokio::task::spawn_blocking(move || {
+            let mut clean = true;
             for plugin in plugins {
-                plugin.shutdown();
+                clean &= plugin.shutdown();
             }
+            clean
         })
         .await
         {
-            tracing::error!(%error, "plugin shutdown worker stopped");
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    "a plugin call did not return before the shutdown drain window; \
+                     abandoning its instance instead of calling into it"
+                );
+            }
+            Err(error) => tracing::error!(%error, "plugin shutdown worker stopped"),
         }
     }
 

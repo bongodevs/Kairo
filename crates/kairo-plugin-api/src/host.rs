@@ -5,6 +5,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use abi_stable::library::{LibraryError, lib_header_from_path};
 use abi_stable::sabi_trait::prelude::TD_Opaque;
@@ -24,6 +25,12 @@ use crate::model::{HttpRequest, HttpResponse, Manifest, PluginError};
 
 /// Largest JSON body accepted from one plugin call.
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// How long [`LoadedPlugin::shutdown`] waits for calls that are still inside the plugin.
+///
+/// A call that does not return within this window is abandoned: the plugin instance is leaked
+/// rather than called into or dropped while the call may still be running.
+const SHUTDOWN_DRAIN: Duration = Duration::from_secs(3);
 
 /// A host callback future. It runs on the runtime that polls the plugin call.
 pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -235,21 +242,40 @@ impl LoadedPlugin {
         decode_json("call", body.as_str())
     }
 
-    /// Stop accepting calls, wait for in-flight calls, then run the plugin's shutdown hook.
+    /// Stop accepting calls, wait a bounded time for in-flight calls, then run the plugin's
+    /// shutdown hook.
+    ///
+    /// Returns `false` when a call was still inside the plugin after [`SHUTDOWN_DRAIN`]. The
+    /// instance is abandoned in that case: dropping it or calling its shutdown hook would be a
+    /// use-after-free, and the process is going down anyway.
     ///
     /// Call this from a blocking context when calls may still be running (the manager uses
     /// `spawn_blocking`). Dropping the last `Arc<LoadedPlugin>` already guarantees no call can be
-    /// in flight, so the `Drop` implementation never waits.
-    pub fn shutdown(&self) {
+    /// in flight, so the `Drop` implementation never waits for long.
+    pub fn shutdown(&self) -> bool {
         let mut lifecycle = self.lifecycle();
         lifecycle.closed = true;
+        if lifecycle.plugin.is_none() {
+            return true;
+        }
+        let deadline = Instant::now() + SHUTDOWN_DRAIN;
         while lifecycle.in_flight > 0 {
-            lifecycle = self.idle.wait(lifecycle).unwrap_or_else(|poisoned| poisoned.into_inner());
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                std::mem::forget(lifecycle.plugin.take());
+                return false;
+            }
+            lifecycle = self
+                .idle
+                .wait_timeout(lifecycle, left)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
         }
         if let Some(mut plugin) = lifecycle.plugin.take() {
             drop(lifecycle);
             plugin.shutdown();
         }
+        true
     }
 
     fn lifecycle(&self) -> MutexGuard<'_, Lifecycle> {

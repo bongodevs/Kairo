@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use abi_stable::std_types::{RResult, RString};
 use futures_util::future::join_all;
@@ -7,7 +8,9 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::abi::{HostService, PluginFailure};
-use crate::model::{HttpRequest, HttpResponse, Open, OpenRequest, Track, TrackInfo};
+use crate::model::{
+    HttpRequest, HttpResponse, LoadRequest, LoadResult, Open, OpenRequest, Track, TrackInfo,
+};
 
 struct Callbacks;
 
@@ -41,6 +44,23 @@ impl HostCallbacks for HttpCallbacks {
                 headers: request.headers,
                 body: request.body.unwrap_or_default(),
             })
+        })
+    }
+}
+
+/// Signals when a plugin call reaches the host, then never answers it.
+struct HangingCallbacks(Arc<tokio::sync::Notify>);
+
+impl HostCallbacks for HangingCallbacks {
+    fn log(&self, _level: LogLevel, _message: &str) {}
+
+    fn http<'a>(
+        &'a self,
+        _request: HttpRequest,
+    ) -> HostFuture<'a, Result<HttpResponse, PluginError>> {
+        Box::pin(async move {
+            self.0.notify_one();
+            std::future::pending().await
         })
     }
 }
@@ -190,6 +210,65 @@ async fn real_fixture_loads_calls_and_shuts_down() {
     plugin.shutdown();
     let error = plugin.call::<_, Value>("source.load", &json!({})).await.unwrap_err();
     assert!(matches!(error, HostError::Shutdown));
+}
+
+/// An idle instance has nothing to drain, so shutdown must not touch the drain window at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "run after `cargo build -p sources`"]
+async fn idle_shutdown_returns_before_the_drain_window() {
+    let plugin = LoadedPlugin::load(fixture_path(), callbacks(), &json!({})).unwrap();
+
+    let started = Instant::now();
+    let clean = plugin.shutdown();
+
+    assert!(clean);
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "idle shutdown waited {:?}",
+        started.elapsed()
+    );
+}
+
+/// A call that never returns must not hold the process open for the full HTTP timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "run after `cargo build -p sources`"]
+async fn shutdown_is_bounded_while_a_call_hangs() {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let plugin = Arc::new(
+        LoadedPlugin::load(
+            fixture_path(),
+            Arc::new(HangingCallbacks(Arc::clone(&entered))),
+            &json!({ "jiosaavn": { "secretKey": "12345678" } }),
+        )
+        .unwrap(),
+    );
+    let call = {
+        let plugin = Arc::clone(&plugin);
+        tokio::spawn(async move {
+            plugin
+                .call::<_, LoadResult>(
+                    "source.load",
+                    &LoadRequest { source: "jiosaavn".into(), identifier: "jssearch:never".into() },
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("the hung call never reached the host");
+
+    let started = Instant::now();
+    let clean = tokio::task::spawn_blocking({
+        let plugin = Arc::clone(&plugin);
+        move || plugin.shutdown()
+    })
+    .await
+    .unwrap();
+    let waited = started.elapsed();
+
+    assert!(!clean, "a hung call must be abandoned, not reported as clean");
+    assert!(waited < Duration::from_secs(5), "shutdown waited {waited:?}");
+    call.abort();
 }
 
 /// Current resident set size in KiB, or 0 where `/proc/self/status` is unavailable.
