@@ -294,9 +294,10 @@ async fn next_input(owner: &mut PlayerOwner, commands: &mut mpsc::Receiver<Comma
             tokio::select! {
                 biased;
                 result = join => Input::Worker(Box::new(result)),
+                // promotion is published before successor frames, so apply it before their end
+                sequence = promotion.wait_for(promotion_seen) => Input::Promotion(sequence),
                 sequence = buffer.wait_for_end(seen) => Input::BufferEnd(sequence),
                 sequence = buffer.wait_for_stuck(stuck_seen) => Input::Stuck(sequence),
-                sequence = promotion.wait_for(promotion_seen) => Input::Promotion(sequence),
                 () = wait_for_cleanup(cleanup_wait) => Input::Cleanup,
                 command = commands.recv() => Input::Command(command),
             }
@@ -304,9 +305,9 @@ async fn next_input(owner: &mut PlayerOwner, commands: &mut mpsc::Receiver<Comma
         _ => {
             tokio::select! {
                 biased;
+                sequence = promotion.wait_for(promotion_seen) => Input::Promotion(sequence),
                 sequence = buffer.wait_for_end(seen) => Input::BufferEnd(sequence),
                 sequence = buffer.wait_for_stuck(stuck_seen) => Input::Stuck(sequence),
-                sequence = promotion.wait_for(promotion_seen) => Input::Promotion(sequence),
                 () = wait_for_cleanup(cleanup_wait) => Input::Cleanup,
                 command = commands.recv() => Input::Command(command),
             }
