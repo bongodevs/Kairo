@@ -1,11 +1,15 @@
 //! Ignored benchmark: the plugin boundary for `load` and `open` against a built-in source.
 //!
 //! Eight concurrent callers, 250 calls each, through the same `Sources` registry and probe the
-//! server uses. The fixture plugin does no I/O of its own; its `open` returns a loopback URL, so
-//! the plugin path pays for one host HTTP fetch that the built-in local path does not.
+//! server uses. The plugin is a local copy of `bongodevs/kairo-plugin-template`: `load` turns
+//! `example:<url>` into a track without any I/O, and `open` returns that same URL, so the plugin
+//! path pays for one host HTTP fetch that the built-in local path does not.
 //!
 //! ```text
-//! cargo build --release -p kairo-plugin-fixture
+//! # once: copy the template, let `resolve` accept http as well as https, then
+//! cargo build --release --manifest-path <copy>/Cargo.toml
+//! cp <copy>/target/release/libkairo_plugin_example.so plugins/example.kai
+//!
 //! cargo test --release --lib plugins::boundary_bench -- --ignored --nocapture
 //! ```
 
@@ -24,10 +28,11 @@ use tokio::task::JoinSet;
 
 use crate::config::PluginConfig;
 use crate::plugins::PluginManager;
-use crate::test_support::fixture_plugin;
+use crate::test_support::example_plugin;
 
 const CLIENTS: usize = 8;
 const CALLS_PER_CLIENT: usize = 250;
+const PLUGIN: &str = "example";
 
 type Call = Arc<dyn Fn() -> BoxFuture<'static, bool> + Send + Sync>;
 
@@ -52,9 +57,10 @@ impl Row {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "benchmark; needs `cargo build -p kairo-plugin-fixture`"]
+#[ignore = "benchmark; needs plugins/example.kai from the plugin template"]
 async fn plugin_and_builtin_load_and_open() {
-    assert!(fixture_plugin().is_file(), "build the fixture plugin: {}", fixture_plugin().display());
+    let plugin = example_plugin();
+    assert!(plugin.is_file(), "install the template plugin first: {}", plugin.display());
 
     let root = std::env::temp_dir().join(format!("kairo-boundary-bench-{}", std::process::id()));
     let _ = tokio::fs::remove_dir_all(&root).await;
@@ -64,15 +70,16 @@ async fn plugin_and_builtin_load_and_open() {
 
     let body = tokio::fs::read(&wav).await.expect("wav bytes");
     let url = serve(body).await;
-    let (manager, sources) = sources(&root, url).await;
+    let (manager, sources) = sources(&root, &plugin).await;
 
-    let plugin_track = loaded(&sources, "fixture:bench").await;
+    let identifier = format!("example:http://{url}/bench.wav");
+    let plugin_track = loaded(&sources, &identifier).await;
     let local_track = loaded(&sources, &wav.to_string_lossy()).await;
     let http_track = loaded(&sources, &format!("http://{url}/bench.wav")).await;
 
     println!("\n| path | p50 | p99 | throughput | CPU per call |");
     println!("|---|---|---|---|---|");
-    row("load plugin", load(Arc::clone(&sources), "fixture:bench".to_owned())).await.print();
+    row("load plugin", load(Arc::clone(&sources), identifier)).await.print();
     row("load built-in local", load(Arc::clone(&sources), wav.to_string_lossy().into_owned()))
         .await
         .print();
@@ -144,15 +151,11 @@ async fn row(label: &'static str, call: Call) -> Row {
     Row { label, p50: at(0.50), p99: at(0.99), wall, cpu, calls: samples.len() }
 }
 
-async fn sources(root: &Path, url: SocketAddr) -> (PluginManager, Arc<Sources>) {
+async fn sources(root: &Path, plugin: &Path) -> (PluginManager, Arc<Sources>) {
     let mut config =
-        PluginConfig { name: "fixture".into(), repo: None, tag: None, config: Default::default() };
-    config
-        .config
-        .insert(String::from("url"), toml::Value::String(format!("http://{url}/bench.wav")));
-    tokio::fs::copy(fixture_plugin(), config.install_path(root))
-        .await
-        .expect("install fixture plugin");
+        PluginConfig { name: PLUGIN.into(), repo: None, tag: None, config: Default::default() };
+    config.config.insert(String::from("enabled"), toml::Value::Boolean(true));
+    tokio::fs::copy(plugin, config.install_path(root)).await.expect("install template plugin");
 
     let manager = PluginManager::load(&[config], root).await.expect("plugin manager");
     let mut providers = ProviderManager::new().with_probe(player::source_probe::audio_probe());

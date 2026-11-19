@@ -143,17 +143,9 @@ pub(crate) fn sources_plugin() -> std::path::PathBuf {
     ))
 }
 
-/// The built fixture cdylib that the plugin boundary benchmark copies to the install path.
-///
-/// Build it in the same profile as the test: `cargo build -p kairo-plugin-fixture` or
-/// `cargo build --release -p kairo-plugin-fixture`.
-pub(crate) fn fixture_plugin() -> std::path::PathBuf {
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(profile).join(format!(
-        "{}kairo_plugin_fixture{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ))
+/// A local copy of the plugin template (`bongodevs/kairo-plugin-template`), installed by hand.
+pub(crate) fn example_plugin() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/example.kai")
 }
 
 pub(crate) fn encoded_track() -> String {
