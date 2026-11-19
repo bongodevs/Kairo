@@ -35,6 +35,7 @@ impl SourceReference {
         self.title.as_deref()
     }
 
+    #[must_use]
     pub fn replacing_identifier(&self, identifier: impl Into<String>) -> Self {
         Self { identifier: identifier.into(), title: self.title.clone() }
     }
@@ -189,11 +190,13 @@ impl OpenedSource {
         self
     }
 
+    #[must_use]
     pub fn with_metadata_updates(mut self, updates: SourceMetadataUpdates) -> Self {
         self.metadata_updates = Some(updates);
         self
     }
 
+    #[must_use]
     pub fn metadata_updates(&self) -> Option<SourceMetadataUpdates> {
         self.metadata_updates.clone()
     }
