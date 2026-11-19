@@ -41,6 +41,7 @@ impl Playlist {
         }
     }
 
+    #[must_use = "this returns the result of the operation, without modifying the original"]
     pub fn with_selected_track(mut self, index: usize) -> Result<Self, PlaylistError> {
         if index >= self.tracks.len() {
             return Err(PlaylistError::SelectedTrackOutOfBounds {

@@ -26,8 +26,6 @@ impl TrackInfo {
             is_seekable: stream.seekable,
             author: stream.metadata.artist.clone().unwrap_or_else(|| UNKNOWN_AUTHOR.to_owned()),
             length: stream.duration,
-            // The reference calls a track a stream only when its length is unknown; seekability is
-            // an independent capability. A forward-only source with a finite header is not a stream.
             is_stream: stream.duration.is_none(),
             title: stream.metadata.title.clone().unwrap_or_else(|| UNKNOWN_TITLE.to_owned()),
             uri: Some(stream.identifier.clone()),

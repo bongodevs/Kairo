@@ -50,7 +50,6 @@ pub fn encode(track: &TrackSnapshot, codecs: &TrackCodecs) -> Result<String, Tra
     let source_data = match codecs.get(&info.source_name) {
         Some(codec) => codec.encode(track.source_data(), track.plugin_info())?,
         None => match (track.source_data(), codecs.fallback()) {
-            // A payload that could not be parsed is preserved byte-for-byte.
             (SourceData::Opaque(bytes), _) => bytes.to_vec(),
             (_, Some(codec)) => codec.encode(track.source_data(), track.plugin_info())?,
             (_, None) => {
@@ -121,7 +120,6 @@ pub fn decode(encoded: &str, codecs: &TrackCodecs) -> Result<DecodeTrack, TrackC
     let decoded = match codecs.get(&source_name) {
         Some(codec) => Some(codec.decode(source_payload, &info)?),
         None if source_payload.is_empty() => None,
-        // Any registered fallback may claim the payload; otherwise it stays opaque.
         None => codecs.fallback().and_then(|codec| codec.decode(source_payload, &info).ok()),
     };
     let (source_data, plugin_info) =
@@ -158,20 +156,16 @@ fn write_long(output: &mut Vec<u8>, value: i64) {
 }
 
 fn write_optional(output: &mut Vec<u8>, value: Option<&str>) -> Result<(), TrackCodecError> {
-    match value {
-        Some(value) => {
-            output.push(1);
-            text::write(output, value)
-        }
-        None => {
-            output.push(0);
-            Ok(())
-        }
+    if let Some(value) = value {
+        output.push(1);
+        text::write(output, value)
+    } else {
+        output.push(0);
+        Ok(())
     }
 }
 
-/// Encodes and decodes one source payload. The position trailing the payload is
-/// handled by [`TrackCodecs`], so implementations never see it.
+/// Encodes and decodes one source payload.
 pub trait SourcePayloadCodec: Send + Sync {
     fn encode(
         &self,
@@ -295,9 +289,10 @@ impl SourcePayloadCodec for ProbeCodec {
             return Err(TrackCodecError::WrongSourceData);
         };
         let mut output = Vec::new();
-        match parameters {
-            Some(parameters) => text::write(&mut output, &format!("{name}|{parameters}"))?,
-            None => text::write(&mut output, name)?,
+        if let Some(parameters) = parameters {
+            text::write(&mut output, &format!("{name}|{parameters}"))?;
+        } else {
+            text::write(&mut output, name)?;
         }
         Ok(output)
     }

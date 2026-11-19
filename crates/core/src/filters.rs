@@ -126,8 +126,8 @@ impl EqualizerConfig {
     }
 
     #[must_use]
-    pub fn gain(&self, band: usize) -> f32 {
-        self.gains.get(band).copied().unwrap_or(0.0)
+    pub const fn gain(&self, band: usize) -> f32 {
+        if band < BAND_COUNT { self.gains[band] } else { 0.0 }
     }
 
     #[must_use]
@@ -175,7 +175,7 @@ pub struct LowPassConfig {
 
 impl LowPassConfig {
     #[must_use]
-    pub fn is_enabled(self) -> bool {
+    pub const fn is_enabled(self) -> bool {
         self.smoothing > 1.0
     }
 }
@@ -194,7 +194,7 @@ pub struct PassConfig {
 
 impl PassConfig {
     #[must_use]
-    pub fn is_enabled(self) -> bool {
+    pub const fn is_enabled(self) -> bool {
         self.cutoff_hz > 0
     }
 }
@@ -213,7 +213,7 @@ pub struct NormalizationConfig {
 
 impl NormalizationConfig {
     #[must_use]
-    pub fn is_enabled(self) -> bool {
+    pub const fn is_enabled(self) -> bool {
         self.max_amplitude > 0.0
     }
 }
@@ -231,7 +231,7 @@ pub struct RotationConfig {
 
 impl RotationConfig {
     #[must_use]
-    pub fn is_enabled(self) -> bool {
+    pub const fn is_enabled(self) -> bool {
         self.rotation_hz != 0.0
     }
 }
@@ -292,7 +292,7 @@ pub struct EchoConfig {
 
 impl EchoConfig {
     #[must_use]
-    pub fn is_enabled(self) -> bool {
+    pub const fn is_enabled(self) -> bool {
         self.length_seconds > 0.0 && self.decay > 0.0
     }
 
@@ -318,7 +318,7 @@ pub struct TremoloConfig {
 
 impl TremoloConfig {
     #[must_use]
-    pub fn is_enabled(self) -> bool {
+    pub const fn is_enabled(self) -> bool {
         self.depth != 0.0
     }
 
@@ -347,7 +347,7 @@ pub struct VibratoConfig {
 
 impl VibratoConfig {
     #[must_use]
-    pub fn is_enabled(self) -> bool {
+    pub const fn is_enabled(self) -> bool {
         self.depth != 0.0
     }
 

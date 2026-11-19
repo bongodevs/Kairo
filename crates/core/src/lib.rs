@@ -14,7 +14,6 @@ pub mod ids {
 pub use media::{
     MediaStream, OpenedSource, SourceHints, SourceMetadata, SourceMetadataUpdates, SourceReference,
 };
-pub use types::Millis;
 pub use types::{
-    AudioFormat, ChannelId, ExceptionSeverity, GuildId, StreamInfo, TrackMetadata, UserId,
+    AudioFormat, ChannelId, ExceptionSeverity, GuildId, Millis, StreamInfo, TrackMetadata, UserId,
 };
