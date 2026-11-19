@@ -64,8 +64,16 @@ pub(crate) struct AppState {
     pub(crate) placeholders: Arc<PlaceholderLog>,
 }
 
+#[derive(Default, Debug)]
+pub(crate) struct CpuSampleState {
+    pub(crate) baseline: Option<(u64, u64)>,
+    pub(crate) sampled_at: u64,
+}
+
+#[derive(Default)]
 pub(crate) struct CpuSampler {
-    pub(crate) load: Mutex<Option<(u64, u64)>>,
+    pub(crate) state: Mutex<CpuSampleState>,
+    pub(crate) process_load: std::sync::atomic::AtomicU64,
 }
 
 impl AppState {
@@ -170,13 +178,13 @@ pub async fn serve(config: &Config) -> anyhow::Result<()> {
         password: config.lavalink.server.password.clone(),
         start: Instant::now(),
         cores,
-        cpu: Arc::new(CpuSampler { load: Mutex::new(None) }),
+        cpu: Arc::new(CpuSampler::default()),
         sources,
         codecs,
         filter_policy: FilterPolicy::configured(&config.lavalink.server.filters),
         player_config,
         player_update_interval,
-        sessions: Arc::new(SessionStore::default()),
+        sessions: Arc::new(SessionStore::new(config.lavalink.server.session_timeout)),
         route_planner,
         metrics_endpoint,
         http2_enabled: config.server.http2.enabled,

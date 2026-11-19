@@ -61,6 +61,21 @@ fn metrics_come_from_the_operating_system() {
 }
 
 #[test]
+fn concurrent_readers_do_not_report_zero_or_corrupt_baseline() {
+    let state = state();
+    let _ = read_metrics(&state);
+
+    let busy = std::time::Instant::now();
+    while busy.elapsed() < std::time::Duration::from_millis(500) {}
+
+    let first = read_metrics(&state);
+    assert!(first.process_load > 0.0);
+
+    let second = read_metrics(&state);
+    assert_eq!(second.process_load, first.process_load);
+}
+
+#[test]
 fn stats_frame_keeps_op_and_a_null_frame_stats() {
     let frame = StatsFrame {
         op: "stats",

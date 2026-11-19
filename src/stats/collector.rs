@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use serde::Serialize;
 use sysinfo::{MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 
@@ -63,6 +65,8 @@ struct Metrics {
     process_load: f64,
 }
 
+const MIN_SAMPLE_INTERVAL_MS: u64 = 250;
+
 fn read_metrics(state: &AppState) -> Metrics {
     let Ok(mut system) = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
@@ -78,9 +82,18 @@ fn read_metrics(state: &AppState) -> Metrics {
     let cpu_ms = system.process(pid).map_or(0, |process| process.accumulated_cpu_time());
     let mono_ms = state.start.elapsed().as_millis() as u64;
 
-    let mut previous = locked(&state.cpu.load);
-    let process_load = load_fraction(*previous, (cpu_ms, mono_ms), state.cores);
-    *previous = Some((cpu_ms, mono_ms));
+    let mut sample = locked(&state.cpu.state);
+    let process_load = if sample.sampled_at > 0
+        && mono_ms.saturating_sub(sample.sampled_at) < MIN_SAMPLE_INTERVAL_MS
+    {
+        f64::from_bits(state.cpu.process_load.load(Ordering::Acquire))
+    } else {
+        let load = load_fraction(sample.baseline, (cpu_ms, mono_ms), state.cores);
+        sample.baseline = Some((cpu_ms, mono_ms));
+        sample.sampled_at = mono_ms;
+        state.cpu.process_load.store(load.to_bits(), Ordering::Release);
+        load
+    };
 
     Metrics {
         total: system.total_memory(),

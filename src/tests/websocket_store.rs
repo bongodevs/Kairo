@@ -213,6 +213,13 @@ fn default_resume_window_is_sixty_seconds() {
     assert_eq!(store.update("s1", None, None), Some((false, 60)));
 }
 
+#[test]
+fn session_store_respects_configured_session_timeout() {
+    let store = SessionStore::new(120);
+    store.reserve("s1");
+    assert_eq!(store.update("s1", None, None), Some((false, 120)));
+}
+
 #[tokio::test]
 async fn the_store_is_not_idle_until_closed_players_have_stopped() {
     let store = Arc::new(SessionStore::default());
@@ -260,5 +267,31 @@ async fn dropping_the_cleanup_handle_still_drains_the_players() {
     tokio::time::timeout(Duration::from_secs(1), store.wait_until_idle())
         .await
         .expect("cancelled cleanup is still drained");
+    assert!(player.player().state().await.is_err(), "player owner is still running");
+}
+
+#[tokio::test]
+async fn paused_sessions_are_drained_when_waiting_until_idle() {
+    let store = Arc::new(SessionStore::default());
+    store.reserve("s1");
+    store.update("s1", Some(true), None);
+    let player = store
+        .create_player(
+            "s1",
+            crate::players::GuildId::new(42),
+            crate::test_support::memory_sources(),
+            Arc::new(player::track::codec::TrackCodecs::new()),
+            player::playback::PlayerConfig::default(),
+        )
+        .expect("create player")
+        .expect("session");
+    let closed = store.close("s1");
+    assert_eq!(store.paused(), 1);
+    assert!(closed.players.is_empty());
+
+    tokio::time::timeout(Duration::from_secs(1), store.wait_until_idle())
+        .await
+        .expect("idle once the players have stopped");
+    assert_eq!(store.paused(), 0);
     assert!(player.player().state().await.is_err(), "player owner is still running");
 }

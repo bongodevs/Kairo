@@ -19,7 +19,7 @@ const EXPOSITION_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 #[derive(Default)]
 pub(crate) struct SearchMetrics {
     loads: Mutex<BTreeMap<(String, String), u64>>,
-    plays: Mutex<BTreeMap<(String, String), u64>>,
+    plays: Mutex<BTreeMap<String, BTreeMap<u64, u64>>>,
 }
 
 impl SearchMetrics {
@@ -29,8 +29,17 @@ impl SearchMetrics {
     }
 
     pub(crate) fn record_play(&self, source: &str, guild_id: &str) {
+        let Ok(guild_id) = guild_id.parse::<u64>() else {
+            return;
+        };
         let mut plays = crate::utils::locked(&self.plays);
-        *plays.entry((source.to_owned(), guild_id.to_owned())).or_default() += 1;
+        if let Some(guilds) = plays.get_mut(source) {
+            *guilds.entry(guild_id).or_default() += 1;
+        } else {
+            let mut guilds = BTreeMap::new();
+            guilds.insert(guild_id, 1);
+            plays.insert(source.to_owned(), guilds);
+        }
     }
 
     pub(crate) fn load_samples(&self) -> Vec<String> {
@@ -49,16 +58,16 @@ impl SearchMetrics {
 
     pub(crate) fn play_samples(&self) -> Vec<String> {
         let plays = crate::utils::locked(&self.plays);
-        plays
-            .iter()
-            .map(|((source, guild_id), count)| {
-                format!(
-                    "lavalink_tracks_played_total{{source=\"{}\",guild_id=\"{}\"}} {count}",
-                    label(source),
-                    label(guild_id)
-                )
-            })
-            .collect()
+        let mut samples = Vec::new();
+        for (source, guilds) in plays.iter() {
+            let source_label = label(source);
+            for (guild_id, count) in guilds {
+                samples.push(format!(
+                    "lavalink_tracks_played_total{{source=\"{source_label}\",guild_id=\"{guild_id}\"}} {count}"
+                ));
+            }
+        }
+        samples
     }
 }
 

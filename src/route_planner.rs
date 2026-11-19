@@ -380,12 +380,17 @@ impl RoutePlanner {
     /// Look for the next non-excluded, non-failing address after `selected`, storing its one-based
     /// index like the reference's `extractLocalAddress`.
     fn select_rotating_address(&self, selected: u64) -> Option<IpAddr> {
-        let limit = self.excluded.len() + 1;
+        let limit = self.excluded.len() + locked(&self.failing).len() + 1;
         for offset in 0..limit {
             let raw = selected.checked_add(1)?.checked_add(offset as u64)?;
-            let address = self.block.address_at(u128::from(raw - 1))?;
+            let index = match self.block.size() {
+                Some(size) if size > 0 => u128::from(raw - 1) % size,
+                _ => u128::from(raw - 1),
+            };
+            let address = self.block.address_at(index)?;
             if self.is_available(address) {
-                self.index.store(raw, Ordering::Release);
+                let stored = u64::try_from(index + 1).unwrap_or(u64::MAX);
+                self.index.store(stored, Ordering::Release);
                 return Some(address);
             }
         }

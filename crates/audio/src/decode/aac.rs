@@ -92,6 +92,19 @@ fn interleave(planes: &[&[f32]], frames: usize, samples: &mut Vec<f32>) {
         samples.extend_from_slice(&planes[0][..frames]);
         return;
     }
+    if let [left, right] = planes {
+        samples.reserve(frames * 2);
+        let common = frames.min(left.len()).min(right.len());
+        for (&l, &r) in left[..common].iter().zip(&right[..common]) {
+            samples.push(l);
+            samples.push(r);
+        }
+        for index in common..frames {
+            samples.push(left.get(index).copied().unwrap_or(0.0));
+            samples.push(right.get(index).copied().unwrap_or(0.0));
+        }
+        return;
+    }
     samples.reserve(frames * planes.len());
     for index in 0..frames {
         for plane in planes {

@@ -1,4 +1,5 @@
 use axum::http::StatusCode;
+use futures_util::future::join_all;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -95,9 +96,11 @@ pub(super) async fn player_update_message_for(
 }
 
 async fn collect_player_updates(players: &PlayerRegistry, active_only: bool) -> Vec<String> {
-    let mut messages = Vec::new();
-    for player in players.list() {
-        let Some((active, message)) = player_update_frame(&player).await else {
+    let entries = players.list();
+    let updates = join_all(entries.iter().map(|p| player_update_frame(p))).await;
+    let mut messages = Vec::with_capacity(updates.len());
+    for update in updates {
+        let Some((active, message)) = update else {
             continue;
         };
         if !active_only || active {

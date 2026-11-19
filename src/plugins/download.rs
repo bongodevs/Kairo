@@ -193,15 +193,20 @@ async fn require_success(
     }
 }
 
-async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, DownloadError> {
+async fn read_body(mut response: reqwest::Response) -> Result<Vec<u8>, DownloadError> {
     if response.content_length().is_some_and(|length| length > MAX_ASSET_BYTES) {
         return Err(DownloadError::TooLarge);
     }
-    let bytes = response.bytes().await.map_err(DownloadError::Read)?;
-    if bytes.len() as u64 > MAX_ASSET_BYTES {
-        return Err(DownloadError::TooLarge);
+    let capacity =
+        response.content_length().and_then(|length| usize::try_from(length).ok()).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    while let Some(chunk) = response.chunk().await.map_err(DownloadError::Read)? {
+        if (bytes.len() + chunk.len()) as u64 > MAX_ASSET_BYTES {
+            return Err(DownloadError::TooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 async fn write_plugin(bytes: &[u8], installed: &Path, root: &Path) -> Result<(), DownloadError> {

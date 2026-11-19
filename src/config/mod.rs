@@ -363,6 +363,9 @@ pub struct TimeoutsConfig {
     #[serde(default = "default_timeout_ms")]
     pub connect_timeout_ms: u64,
     /// Milliseconds allowed to obtain a pooled connection.
+    ///
+    /// Accepted for Lavalink v4 configuration compatibility; reqwest/hyper connection pooling
+    /// has no separate pool-acquisition timeout.
     #[serde(default = "default_timeout_ms")]
     pub connection_request_timeout_ms: u64,
     /// Milliseconds allowed between reads on an open connection.

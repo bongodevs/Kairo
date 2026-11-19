@@ -174,3 +174,16 @@ fn an_explicit_he_config_decodes_raw_access_units() {
     assert_eq!(format.channels, 2);
     assert!(frames > 48_000, "one second of HE-AAC decoded as {frames} frames");
 }
+
+#[test]
+fn stereo_interleave_zips_planar_channels() {
+    let left = [1.0, 2.0, 3.0];
+    let right = [4.0, 5.0, 6.0];
+    let mut samples = Vec::new();
+    super::interleave(&[&left[..], &right[..]], 3, &mut samples);
+    assert_eq!(samples, [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+
+    let mut padded = Vec::new();
+    super::interleave(&[&left[..2], &right[..1]], 3, &mut padded);
+    assert_eq!(padded, [1.0, 4.0, 2.0, 0.0, 0.0, 0.0]);
+}

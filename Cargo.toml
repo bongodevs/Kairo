@@ -57,6 +57,7 @@ tracing-subscriber = { version = "0.3", features = ["chrono", "env-filter", "jso
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+futures-util.workspace = true
 getrandom = "0.3"
 kairo-core = { path = "crates/core" }
 player = { path = "crates/player" }

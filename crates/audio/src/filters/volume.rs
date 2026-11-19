@@ -15,9 +15,9 @@ impl FilterVolume {
         let multiplier = if (UNITY - volume).abs() < BYPASS_DISTANCE {
             None
         } else if volume <= CURVE_SPLIT {
-            Some((f64::from(volume * 0.79).tan() * 10_000.0) as f32)
+            Some(((f64::from(volume * 0.79).tan() * 10_000.0) as f32) / 10_000.0)
         } else {
-            Some(24_612.0 * (volume * 100.0) / 150.0)
+            Some((24_612.0 * (volume * 100.0) / 150.0) / 10_000.0)
         };
         Ok(Self { multiplier })
     }
@@ -27,7 +27,7 @@ impl FilterVolume {
             return;
         };
         for sample in samples {
-            *sample = (*sample * multiplier / 10_000.0).clamp(-1.0, 1.0);
+            *sample = (*sample * multiplier).clamp(-1.0, 1.0);
         }
     }
 }

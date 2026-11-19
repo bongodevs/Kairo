@@ -153,6 +153,25 @@ fn failing_addresses_are_reported_and_freed() {
 }
 
 #[test]
+fn rotating_address_wraps_when_reaching_block_size() {
+    let planner = planner(&["10.0.0.0/31"], "RotateOnBan");
+    let first = planner.current_address().expect("first address");
+    assert_eq!(first.to_string(), "10.0.0.0");
+    assert_eq!(status_json(&planner)["details"]["ipIndex"], "1");
+
+    planner.mark_failing(first, 1);
+    let second = planner.current_address().expect("second address");
+    assert_eq!(second.to_string(), "10.0.0.1");
+    assert_eq!(status_json(&planner)["details"]["ipIndex"], "2");
+
+    planner.free_address(first);
+    planner.mark_failing(second, 2);
+    let third = planner.current_address().expect("wrapped address");
+    assert_eq!(third.to_string(), "10.0.0.0");
+    assert_eq!(status_json(&planner)["details"]["ipIndex"], "1");
+}
+
+#[test]
 fn load_balance_has_the_reference_shape() {
     let planner = planner(&["10.0.0.0/24"], "LoadBalance");
     let value = status_json(&planner);

@@ -215,7 +215,7 @@ pub(crate) fn app_state_with_shared_sources(
         password: password.map(str::to_owned),
         start: Instant::now(),
         cores: 1,
-        cpu: Arc::new(CpuSampler { load: Mutex::new(None) }),
+        cpu: Arc::new(CpuSampler::default()),
         sources,
         codecs,
         filter_policy: FilterPolicy::default(),

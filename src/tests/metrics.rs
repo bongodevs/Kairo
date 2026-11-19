@@ -210,6 +210,21 @@ fn search_counters_render_the_reference_families() {
     assert!(!empty.contains("lavalink_item_load_results_total{"), "{empty}");
 }
 
+#[test]
+fn search_metrics_rejects_invalid_guild_id_and_formats_u64() {
+    let metrics = SearchMetrics::default();
+    metrics.record_play("local", "not-a-number");
+    assert!(metrics.play_samples().is_empty());
+
+    metrics.record_play("local", "123456789012345678");
+    let samples = metrics.play_samples();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(
+        samples[0],
+        r#"lavalink_tracks_played_total{source="local",guild_id="123456789012345678"} 1"#
+    );
+}
+
 #[tokio::test]
 async fn a_load_records_the_dev_counter() {
     let addr = http::spawn_with_sources(true, crate::test_support::memory_sources()).await;

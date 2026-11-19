@@ -85,12 +85,18 @@ struct Sessions {
     paused: HashMap<String, Paused>,
 }
 
-#[derive(Default)]
 pub(crate) struct SessionStore {
     inner: Mutex<Sessions>,
     /// Closed sessions whose players are still stopping; drained before the process exits.
     cleanup: AtomicUsize,
     idle: Notify,
+    default_timeout: i64,
+}
+
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self::new(DEFAULT_RESUME_TIMEOUT as u64)
+    }
 }
 
 /// Players drained from one closed session, still owed a stop and a voice close.
@@ -131,6 +137,15 @@ impl Drop for ClosedPlayers {
 }
 
 impl SessionStore {
+    pub(crate) fn new(session_timeout: u64) -> Self {
+        Self {
+            inner: Mutex::new(Sessions::default()),
+            cleanup: AtomicUsize::new(0),
+            idle: Notify::new(),
+            default_timeout: i64::try_from(session_timeout).unwrap_or(DEFAULT_RESUME_TIMEOUT),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn reserve(&self, id: &str) -> bool {
         self.reserve_for(id, 0)
@@ -141,7 +156,10 @@ impl SessionStore {
         if sessions.open.contains_key(id) {
             return false;
         }
-        sessions.open.insert(id.to_owned(), Session { user_id, ..Session::default() });
+        sessions.open.insert(
+            id.to_owned(),
+            Session { user_id, timeout: self.default_timeout, ..Session::default() },
+        );
         true
     }
 
@@ -185,14 +203,36 @@ impl SessionStore {
         true
     }
 
-    pub(crate) async fn wait_until_idle(&self) {
+    pub(crate) async fn wait_until_idle(self: &Arc<Self>) {
+        self.drain_paused().await;
         loop {
             let mut notified = std::pin::pin!(self.idle.notified());
             notified.as_mut().enable();
-            if self.lock().open.is_empty() && self.cleanup.load(Ordering::Acquire) == 0 {
+            let is_idle = {
+                let sessions = self.lock();
+                sessions.open.is_empty()
+                    && sessions.paused.is_empty()
+                    && self.cleanup.load(Ordering::Acquire) == 0
+            };
+            if is_idle {
                 return;
             }
             notified.await;
+        }
+    }
+
+    async fn drain_paused(self: &Arc<Self>) {
+        let paused = {
+            let mut sessions = self.lock();
+            std::mem::take(&mut sessions.paused)
+        };
+        for (_, entry) in paused {
+            entry.expiry.abort();
+            let players = entry.session.registry.drain();
+            if !players.is_empty() {
+                self.cleanup.fetch_add(1, Ordering::AcqRel);
+                ClosedPlayers { store: Arc::clone(self), players }.shutdown().await;
+            }
         }
     }
 
