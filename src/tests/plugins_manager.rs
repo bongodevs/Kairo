@@ -34,6 +34,14 @@ async fn empty_configuration_does_not_discover_files_or_create_directories() {
 
     assert_eq!(manager.counts(), (0, 0));
     assert!(!root.join(".run").exists());
+
+    // Registering a manager without plugins must not build the HTTP client the adapters would
+    // share; it would be thrown away unused.
+    let mut providers = ProviderManager::new();
+    manager
+        .register_sources(&mut providers, ["http", "local"], Vec::new())
+        .expect("register sources");
+    assert!(manager.source_names().is_empty());
     tokio::fs::remove_dir_all(root).await.expect("cleanup");
 }
 

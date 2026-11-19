@@ -133,6 +133,14 @@ impl PluginManager {
         fallbacks: Vec<FallbackProvider>,
     ) -> Result<Arc<MirrorChain>, RegistrationError> {
         let mirror = Arc::new(MirrorChain::new(fallbacks));
+        // Building the source just to hand its client to adapters costs a TLS client setup, so do
+        // it only when a plugin actually claims a source.
+        if !self.entries.iter().any(|entry| match &*entry.state() {
+            EntryState::Loaded { slot, .. } => !slot.plugin().manifest().sources.is_empty(),
+            EntryState::Failed { .. } | EntryState::Quarantined { .. } => false,
+        }) {
+            return Ok(mirror);
+        }
         let mut claims = ClaimRegistry::new(reserved);
         let http = providers.http_source()?;
         let mut adapters = Vec::new();
