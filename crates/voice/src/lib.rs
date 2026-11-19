@@ -1,6 +1,5 @@
 pub mod config;
 pub mod connection;
-// The hot path the frame benchmark measures; nothing else outside the crate reads them.
 pub mod crypto;
 pub mod sender;
 pub mod udp;
@@ -21,7 +20,6 @@ pub use connection::{SPEAKING_MICROPHONE, SPEAKING_PRIORITY, SPEAKING_SOUNDSHARE
 pub use gateway::{GatewayError, GatewaySocket, Inbound, Ping, Socket, VoiceEvent, VoiceTarget};
 pub use sender::{FrameSource, FrameStats};
 
-// Old module names kept so existing callers keep compiling.
 pub use connection as connect;
 pub use sender as media;
 pub use udp::rtp;

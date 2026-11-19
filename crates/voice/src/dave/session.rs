@@ -25,8 +25,6 @@ impl super::DaveHandler {
             let _ = session.prepare_transition(transition_id, version);
         }
         if transition_id == 0 {
-            // Transition 0 is applied at prepare time; the gateway's later
-            // execute is a no-op, exactly as the reference library treats it.
             self.finish_transition(version);
             return Vec::new();
         }
@@ -44,8 +42,6 @@ impl super::DaveHandler {
         let Some(nonzero) = NonZeroU16::new(version) else {
             return self.go_transport_only();
         };
-        // reinit keeps the keys, so readiness alone must not resume encrypted
-        // sending: the upgrade transition is what ends transport-only.
         let upgrading = self.downgraded;
         if !self.open_session(nonzero) {
             return Vec::new();
@@ -178,8 +174,6 @@ impl super::DaveHandler {
 
     pub(super) fn execute_pending(&mut self, transition_id: u16) -> Vec<DaveOut> {
         let Some(version) = self.pending_transitions.remove(&transition_id) else {
-            // Transition 0 is already applied during prepare; its execute frame
-            // is expected and carries no pending work.
             if transition_id != 0 {
                 tracing::warn!("execute transition {transition_id} with nothing pending");
             }
@@ -210,8 +204,6 @@ impl super::DaveHandler {
         } else if version > 0 && self.downgraded {
             self.downgraded = false;
             if let Some(session) = self.session.as_mut() {
-                // Late unencrypted frames remain valid for ten seconds after
-                // an upgrade, then passthrough is refused again.
                 session.set_passthrough_mode(false, Some(PASSTHROUGH_EXPIRY));
             }
             tracing::debug!("DAVE upgraded back to E2EE");

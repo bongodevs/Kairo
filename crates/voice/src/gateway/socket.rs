@@ -129,7 +129,6 @@ fn gateway_url(endpoint: &str, port_override: bool) -> Result<String, GatewayErr
     if host.is_empty() {
         return Err(GatewayError::Connect("empty voice endpoint".into()));
     }
-    // Only a build that opted into the test feature turns the explicit scheme into plaintext.
     let scheme =
         if cfg!(feature = "plaintext-gateway") && scheme == "plaintext" { "ws" } else { "wss" };
     Ok(format!("{scheme}://{host}/?v={GATEWAY_VERSION}"))

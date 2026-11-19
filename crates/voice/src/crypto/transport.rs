@@ -10,7 +10,6 @@ const TAG_LEN: usize = 16;
 const NONCE_PREFIX_LEN: usize = 4;
 
 pub const MAX_PACKET_BYTES: usize = 1276;
-// davey reserves 11 supplemental bytes plus up to 64 bytes of transform padding.
 const DAVE_MAX_OVERHEAD: usize = 75;
 
 pub(crate) const MAX_DATAGRAM_BYTES: usize =

@@ -89,7 +89,6 @@ impl super::DaveHandler {
             OP_MLS_PROPOSALS => self.process_proposals(body),
             OP_MLS_ANNOUNCE_COMMIT_TRANSITION => self.process_commit(body),
             OP_MLS_WELCOME => self.process_welcome(body),
-            // 26, 28, 31 are client->server only.
             _ => Vec::new(),
         }
     }
