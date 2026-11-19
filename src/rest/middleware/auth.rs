@@ -27,8 +27,6 @@ pub(super) fn authorize(authorization: Option<&str>, password: Option<&str>) -> 
         return Authz::Unauthorized;
     };
     match password {
-        // Deliberate hardening over the reference, which uses `String.equals`: a secret
-        // compared with an early-return comparison leaks how many leading bytes matched.
         Some(expected) if secret_eq(given.as_bytes(), expected.as_bytes()) => Authz::Allow,
         _ => Authz::Forbidden,
     }

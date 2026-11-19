@@ -27,5 +27,9 @@ pub(crate) fn generated_silence(
 }
 
 #[cfg(test)]
+#[path = "../tests/plugin_boundary_bench.rs"]
+mod boundary_bench;
+
+#[cfg(test)]
 #[path = "../tests/resilience.rs"]
 mod resilience_tests;

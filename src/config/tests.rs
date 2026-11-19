@@ -19,7 +19,6 @@ fn empty_document_yields_defaults() {
     assert!(!config.lavalink.server.sources.local);
     assert!(config.plugins.is_empty());
     assert!(config.lavalink.server.filters.is_empty());
-    // A node with no crossfade block still hands tracks over gaplessly.
     assert!(!config.crossfade.enable);
     assert!(config.crossfade.gapless);
     assert_eq!(config.crossfade.duration_ms, 6000);
@@ -32,7 +31,6 @@ fn empty_document_yields_defaults() {
     assert!(config.logging.color);
     assert!(config.logging.banner);
     assert!(config.logging.file.is_none());
-    // Scraping is opt-in, as in the reference, at its documented default path.
     assert!(!config.metrics.prometheus.enabled);
     assert_eq!(config.metrics.prometheus.endpoint, "/metrics");
 }
@@ -189,7 +187,6 @@ gapless = false
     assert_eq!(engine.curve, player::effects::CrossfadeCurve::Linear);
     assert!(!engine.gapless);
 
-    // Without a fade, the default still asks for a zero-length hand-off.
     let default = Config::default().crossfade.to_engine().expect("gapless");
     assert!(default.is_gapless());
     assert_eq!(default.manual_duration_ms, 3500);
@@ -292,7 +289,6 @@ local = true
 
 #[test]
 fn unknown_lavalink_key_is_not_an_error() {
-    // later features add keys; old binaries should still start
     let config: Config =
         toml::from_str("[lavalink.server]\nsomeFutureKey = 1\n").expect("unknown keys tolerated");
     assert_eq!(config.lavalink.server.player_update_interval, 5);

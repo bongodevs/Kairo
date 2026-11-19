@@ -143,6 +143,19 @@ pub(crate) fn sources_plugin() -> std::path::PathBuf {
     ))
 }
 
+/// The built fixture cdylib that the plugin boundary benchmark copies to the install path.
+///
+/// Build it in the same profile as the test: `cargo build -p kairo-plugin-fixture` or
+/// `cargo build --release -p kairo-plugin-fixture`.
+pub(crate) fn fixture_plugin() -> std::path::PathBuf {
+    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(profile).join(format!(
+        "{}kairo_plugin_fixture{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ))
+}
+
 pub(crate) fn encoded_track() -> String {
     let track = Track::from_parts(
         SourceReference::new("memory.wav"),

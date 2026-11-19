@@ -56,9 +56,6 @@ fn build_filter(cfg: &LoggingConfig) -> EnvFilter {
 
 fn build_filter_from(cfg: &LoggingConfig) -> EnvFilter {
     let verbose = is_verbose(&cfg.level);
-    // At `debug` and `trace`, only this workspace's crates follow the configured level. The
-    // remaining targets stay at `info`, so transport, TLS, codec and MLS internals do not bury
-    // application events. An explicit level brings any target back.
     let mut directives = String::from(if verbose { "info" } else { cfg.level.as_str() });
 
     if verbose {
@@ -104,12 +101,8 @@ fn overlaps(cfg: &LoggingConfig, target: &str) -> bool {
 /// Workspace targets that follow the configured level at `debug` and `trace`.
 const APP_TARGETS: &[&str] = &["kairo", "kairo_core", "kairo_audio", "player", "sources", "voice"];
 
-const DEFAULT_SUPPRESSIONS: &[(&str, &str)] = &[
-    // Known-benign reference noise: ISO-BMFF box headers are reported as
-    // "junk" while probing, and the demuxer warns on ordinary AAC variants.
-    ("symphonia_format_isomp4::demuxer", "error"),
-    ("symphonia_core::formats::probe", "error"),
-];
+const DEFAULT_SUPPRESSIONS: &[(&str, &str)] =
+    &[("symphonia_format_isomp4::demuxer", "error"), ("symphonia_core::formats::probe", "error")];
 
 fn fmt_layer<W>(
     cfg: &LoggingConfig,

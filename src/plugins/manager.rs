@@ -133,8 +133,6 @@ impl PluginManager {
         fallbacks: Vec<FallbackProvider>,
     ) -> Result<Arc<MirrorChain>, RegistrationError> {
         let mirror = Arc::new(MirrorChain::new(fallbacks));
-        // Building the source just to hand its client to adapters costs a TLS client setup, so do
-        // it only when a plugin actually claims a source.
         if !self.entries.iter().any(|entry| match &*entry.state() {
             EntryState::Loaded { slot, .. } => !slot.plugin().manifest().sources.is_empty(),
             EntryState::Failed { .. } | EntryState::Quarantined { .. } => false,
@@ -259,7 +257,6 @@ impl PluginManager {
             tracing::info!(plugin = name, "plugin reload reuses the staged copy");
         }
 
-        // the swapped-out handle is one more reference to `previous`, which retire waits on
         drop(slot.replace(Arc::clone(&plugin)));
         *entry.state_mut() =
             EntryState::Loaded { slot: Arc::clone(&slot), hash: staged.hash.clone(), reason: None };

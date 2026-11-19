@@ -107,8 +107,6 @@ impl AppState {
 }
 
 pub async fn serve(config: &Config) -> anyhow::Result<()> {
-    // Watch from the first line: a signal that arrives while a plugin is loading must end in a
-    // clean stop, not in the default handler abandoning an armed guard marker.
     let (shutdown, stop_seen) = tokio::sync::watch::channel(false);
     let notice = shutdown.clone();
     tokio::spawn(async move {
@@ -220,8 +218,6 @@ pub async fn serve(config: &Config) -> anyhow::Result<()> {
             Ok(())
         }
     };
-    // Stop accepting and release the listener. Connection tasks are detached by axum, but the
-    // plugin drain below has its own cap, so a stuck request cannot hold the process open.
     drop(serve);
     if *stop_seen.borrow() {
         match tokio::time::timeout(SHUTDOWN_GRACE, sessions.wait_until_idle()).await {

@@ -61,8 +61,6 @@ impl Cidr {
             Some((address, mask)) => (address.trim(), Some(mask.trim())),
             None => (text, None),
         };
-        // Like the reference's `Ipv4Block`, the literal address is the block start; only IPv6 is
-        // masked to its prefix.
         if let Ok(address) = Ipv4Addr::from_str(address) {
             return Ok(Self {
                 family: Family::V4,
@@ -428,7 +426,6 @@ impl RoutePlanner {
         if let Some(address) = self.block.address_at(index) {
             return Some(address);
         }
-        // Past the last block: wrap to the first one and restart its clock.
         self.block_index.store(0, Ordering::Release);
         self.block.address_at(self.block_offset())
     }

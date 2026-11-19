@@ -109,7 +109,6 @@ async fn run_events(
             PlayerEvent::TrackException { .. } => {
                 store.send_lifecycle(&session_id, message).await;
             }
-            // pause/resume stay internal; event_message already drops them
             PlayerEvent::Paused { .. } | PlayerEvent::Resumed { .. } => {}
         }
     }

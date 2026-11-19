@@ -125,7 +125,6 @@ async fn run(player: Weak<PlayerEntry>, resume: Resume) {
         if !entry.resume_current(generation) {
             return;
         }
-        // Only a placeholder that still owns the player may be replaced.
         if position_of(&entry, &reference).await.is_none() {
             return;
         }
@@ -134,7 +133,6 @@ async fn run(player: Weak<PlayerEntry>, resume: Resume) {
         let Some(entry) = player.upgrade() else {
             return;
         };
-        // The silence may have ended, or a new track may have taken over, while the source opened.
         if !entry.resume_current(generation) {
             return;
         }

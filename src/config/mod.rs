@@ -433,7 +433,6 @@ impl Config {
     }
 
     fn apply_env_overrides(&mut self) {
-        // KAIRO_PASSWORD beats the file so a secret need not land on disk.
         self.override_password(std::env::var("KAIRO_PASSWORD").ok().as_deref());
     }
 

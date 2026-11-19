@@ -27,8 +27,6 @@ fn decode_one(encoded: &str, codecs: &TrackCodecs) -> Result<TrackResponse, Stat
         }
         Ok(DecodeTrack::UnsupportedVersion { .. }) => Err(StatusCode::INTERNAL_SERVER_ERROR),
         Ok(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        // The reference lets the base64/decode exception escape, so a malformed envelope is a
-        // server fault there too; only the missing-parameter case is a client error.
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }

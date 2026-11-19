@@ -5,7 +5,6 @@ use anyhow::Context;
 use kairo::config::{Config, ConfigError};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // The voice gateway needs a rustls process-default provider (see Cargo.toml).
     let _ = rustls::crypto::ring::default_provider().install_default();
     let path = config_path();
     let (config, used_defaults) = load_config(&path)?;

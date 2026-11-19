@@ -10,7 +10,6 @@ use serde::Serialize;
 
 use crate::utils::time::now_millis;
 
-// Oversized framework error text is discarded in favor of the HTTP status reason.
 const MAX_ERROR_BODY: usize = 64 * 1024;
 
 #[derive(Serialize)]
