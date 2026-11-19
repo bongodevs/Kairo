@@ -176,7 +176,7 @@ pub enum Severity {
     Fault,
 }
 
-/// Error body returned with status code `1`.
+/// Failure body shared by plugin calls and native sources.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginError {
     pub severity: Severity,
