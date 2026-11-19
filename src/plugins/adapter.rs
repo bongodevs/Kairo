@@ -286,10 +286,7 @@ impl SourceClaims {
         let Some(host) = url.host_str() else {
             return false;
         };
-        self.hosts.iter().any(|claim| {
-            host.eq_ignore_ascii_case(claim)
-                || host.strip_suffix(claim).is_some_and(|prefix| prefix.ends_with('.'))
-        })
+        self.hosts.iter().any(|claim| host_matches(host, claim))
     }
 }
 
@@ -373,10 +370,13 @@ pub(super) fn validate_claims(
     Ok(SourceClaims::new(source))
 }
 
+fn host_matches(host: &str, claim: &str) -> bool {
+    host.eq_ignore_ascii_case(claim)
+        || host.strip_suffix(claim).is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 pub(super) fn hosts_overlap(left: &str, right: &str) -> bool {
-    left.eq_ignore_ascii_case(right)
-        || left.strip_suffix(right).is_some_and(|prefix| prefix.ends_with('.'))
-        || right.strip_suffix(left).is_some_and(|prefix| prefix.ends_with('.'))
+    host_matches(left, right) || host_matches(right, left)
 }
 
 fn collision(
@@ -396,7 +396,7 @@ fn collision(
     Ok(())
 }
 
-fn valid_label(value: &str) -> bool {
+pub(super) fn valid_label(value: &str) -> bool {
     !value.is_empty()
         && value
             .bytes()

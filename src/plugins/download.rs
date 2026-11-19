@@ -263,30 +263,14 @@ fn asset_name(name: &str) -> Result<String, DownloadError> {
 }
 
 fn asset_for(name: &str, os: &str, arch: &str) -> Result<String, DownloadError> {
-    let platform = match os {
-        "linux" => "linux",
-        "macos" => "macos",
-        "windows" => "windows",
-        other => {
-            return Err(DownloadError::UnsupportedPlatform {
-                name: name.to_owned(),
-                os: other.to_owned(),
-                arch: arch.to_owned(),
-            });
-        }
-    };
-    let arch = match arch {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => {
-            return Err(DownloadError::UnsupportedPlatform {
-                name: name.to_owned(),
-                os: platform.to_owned(),
-                arch: other.to_owned(),
-            });
-        }
-    };
-    Ok(format!("{name}-{platform}-{arch}.{}", kairo_plugin_api::EXTENSION))
+    if !matches!(os, "linux" | "macos" | "windows") || !matches!(arch, "x86_64" | "aarch64") {
+        return Err(DownloadError::UnsupportedPlatform {
+            name: name.to_owned(),
+            os: os.to_owned(),
+            arch: arch.to_owned(),
+        });
+    }
+    Ok(format!("{name}-{os}-{arch}.{}", kairo_plugin_api::EXTENSION))
 }
 
 /// Longer than a plugin call: a release asset is a few megabytes, not a JSON response.

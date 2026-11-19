@@ -43,7 +43,7 @@ pub(super) fn validate_manifest(expected_name: &str, manifest: &Manifest) -> Res
     }
     let mut sources = HashSet::new();
     for source in &manifest.sources {
-        if !valid_name(&source.name) {
+        if !super::adapter::valid_label(&source.name) {
             return Err(format!("plugin source name {:?} is invalid", source.name));
         }
         if !sources.insert(source.name.as_str()) {
@@ -51,11 +51,4 @@ pub(super) fn validate_manifest(expected_name: &str, manifest: &Manifest) -> Res
         }
     }
     Ok(())
-}
-
-fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
