@@ -197,7 +197,6 @@ impl<P: Plugin> PluginInterface for PluginAdapter<P> {
     }
 
     fn shutdown(&mut self) {
-        // The host waits for in-flight calls before calling this, so the adapter is the last owner.
         if let Some(plugin) = Arc::get_mut(&mut self.plugin) {
             let _ = catch_unwind(AssertUnwindSafe(|| plugin.shutdown()));
         }
