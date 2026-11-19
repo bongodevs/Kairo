@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use super::hash;
 use crate::config::PluginConfig;
 
 const LOCK_FILE: &str = "plugins.lock";
@@ -135,7 +135,7 @@ async fn ensure_from(
         "downloading plugin"
     );
     let (bytes, published) = release_through_url(client, origin, repo, tag, &asset).await?;
-    let sha256 = hex(&Sha256::digest(&bytes));
+    let sha256 = hash::hex(&hash::bytes(&bytes));
     if published.is_some_and(|published| !published.eq_ignore_ascii_case(&sha256)) {
         return Err(DownloadError::AssetHashMismatch);
     }
@@ -241,40 +241,12 @@ async fn write_lock(path: &Path, lock: &Lock) -> Result<(), DownloadError> {
 }
 
 async fn hash_file(path: &Path) -> Result<String, DownloadError> {
-    let path = path.to_path_buf();
-    let digest = tokio::task::spawn_blocking(move || hash(&path))
+    let file = path.to_path_buf();
+    let digest = tokio::task::spawn_blocking(move || hash::file(&file))
         .await
-        .map_err(DownloadError::HashWorker)??;
-    Ok(hex(&digest))
-}
-
-fn hash(path: &Path) -> Result<[u8; 32], DownloadError> {
-    use std::io::Read;
-
-    let mut file = std::fs::File::open(path)
+        .map_err(DownloadError::HashWorker)?
         .map_err(|source| DownloadError::Hash { path: path.to_path_buf(), source })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|source| DownloadError::Hash { path: path.to_path_buf(), source })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher.finalize().into())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(DIGITS[(byte >> 4) as usize] as char);
-        encoded.push(DIGITS[(byte & 0x0f) as usize] as char);
-    }
-    encoded
+    Ok(hash::hex(&digest))
 }
 
 fn parse_sha(bytes: &[u8]) -> Result<String, DownloadError> {

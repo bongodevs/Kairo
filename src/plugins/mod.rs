@@ -2,6 +2,7 @@ mod adapter;
 pub(crate) mod codec;
 mod download;
 mod guard;
+mod hash;
 mod health;
 mod host_api;
 mod load;

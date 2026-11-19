@@ -1,9 +1,8 @@
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sha2::{Digest, Sha256};
-
+use super::hash;
 use crate::config::PluginConfig;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -62,7 +61,7 @@ pub(super) async fn stage(config: &PluginConfig, root: &Path) -> Result<Staged, 
         });
     }
     let hash_path = temporary.clone();
-    let digest = match tokio::task::spawn_blocking(move || hash(&hash_path)).await {
+    let digest = match tokio::task::spawn_blocking(move || hash::file(&hash_path)).await {
         Ok(Ok(digest)) => digest,
         Ok(Err(error)) => {
             let _ = tokio::fs::remove_file(&temporary).await;
@@ -73,7 +72,7 @@ pub(super) async fn stage(config: &PluginConfig, root: &Path) -> Result<Staged, 
             return Err(StageError::Worker(error));
         }
     };
-    let hash = hex(&digest);
+    let hash = hash::hex(&digest);
     let staged = run.join(format!("{}-{hash}.{}", config.name, kairo_plugin_api::EXTENSION));
     match tokio::fs::try_exists(&staged).await {
         Ok(true) => {
@@ -91,30 +90,6 @@ pub(super) async fn stage(config: &PluginConfig, root: &Path) -> Result<Staged, 
         return Err(StageError::Publish { path: staged, source });
     }
     Ok(Staged { path: staged, hash })
-}
-
-fn hash(path: &Path) -> io::Result<[u8; 32]> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher.finalize().into())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(DIGITS[(byte >> 4) as usize] as char);
-        encoded.push(DIGITS[(byte & 0x0f) as usize] as char);
-    }
-    encoded
 }
 
 #[cfg(test)]

@@ -63,14 +63,14 @@ fn lock_entry(bytes: &[u8]) -> LockEntry {
         name: String::from("plugin"),
         tag: String::from("v1"),
         asset: asset_name("plugin").expect("asset"),
-        sha256: hex(&Sha256::digest(bytes)),
+        sha256: hash::hex(&hash::bytes(bytes)),
     }
 }
 
 #[tokio::test]
 async fn a_missing_plugin_is_downloaded_and_locked() {
     let bytes = b"plugin bytes".to_vec();
-    let digest = hex(&Sha256::digest(&bytes));
+    let digest = hash::hex(&hash::bytes(&bytes));
     let server = serve(bytes.clone(), Some(format!("{digest}  plugin.kai\n"))).await;
     let root = root("fresh");
     let config = config(Some("owner/plugin"), Some("v1"));
