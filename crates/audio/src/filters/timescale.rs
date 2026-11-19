@@ -11,7 +11,6 @@ use crate::{CHANNELS, FRAME_SAMPLES, SAMPLE_RATE};
 const MAX_RESAMPLED_FRAMES: usize = FRAME_SAMPLES * 4;
 const HOP_MS: f32 = 15.0;
 const SEARCH_MS: f32 = 3.0;
-// wsola compacts in 2^16-frame batches; reserve past one batch before playback.
 const WARMUP_FRAMES: usize = (1 << 16) + 8_192;
 static WARMUP_SILENCE: [f32; FRAME_SAMPLES * CHANNELS] = [0.0; FRAME_SAMPLES * CHANNELS];
 

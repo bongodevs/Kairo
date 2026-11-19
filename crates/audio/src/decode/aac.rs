@@ -1,8 +1,4 @@
 //! AAC access-unit decoding through `syom`.
-//!
-//! Symphonia still probes and demuxes every container and keeps the packet
-//! timeline. Only the codec call changes: `syom` understands the profiles the
-//! bundled Symphonia decoder does not, including HE-AAC v1 (SBR) and v2 (PS).
 
 use symphonia::core::codecs::audio::AudioCodecParameters;
 
@@ -27,15 +23,6 @@ pub(super) struct AacDecoder {
 
 impl AacDecoder {
     /// Build a decoder from the container's codec parameters.
-    ///
-    /// ISO-MP4 carries the raw `esds` audio-specific config, which names the
-    /// AAC profile and can therefore signal HE-AAC. ADTS strips its header in
-    /// the demuxer and describes an LC core, so a minimal LC config is
-    /// synthesised; any SBR in the fill elements still activates inside
-    /// `syom` and doubles the reported output rate.
-    ///
-    /// Returns `None` when the parameters cannot describe an AAC stream, so
-    /// the caller can keep Symphonia as a fallback.
     pub(super) fn open(params: &AudioCodecParameters) -> Option<Self> {
         let config = match params.extra_data.as_deref() {
             Some(config) if !config.is_empty() => config.to_vec(),
@@ -86,9 +73,7 @@ impl AacDecoder {
         }
     }
 
-    /// Rebuild the decoder after an error. `syom` fails the instance on any
-    /// decode error and requires `reset` before the next access unit; a fresh
-    /// decoder is the cheapest way to reinstall the same config.
+    /// Rebuild the decoder after an error.
     fn restart(&mut self) -> Result<(), DecodeError> {
         self.decoder = syom::Decoder::from_asc(&self.config, options())
             .map_err(|error| DecodeError::Aac { message: error.to_string() })?;
@@ -96,9 +81,7 @@ impl AacDecoder {
     }
 }
 
-/// Split channels, no artificial track-length ceiling. A streaming decoder
-/// holds one frame at a time, so the duration budget would only reject long
-/// podcasts and mixes without protecting memory.
+/// Split channels, no artificial track-length ceiling.
 fn options() -> syom::DecodeOptions {
     syom::DecodeOptions::audio().with_max_duration_secs(f64::INFINITY)
 }
@@ -117,9 +100,7 @@ fn interleave(planes: &[&[f32]], frames: usize, samples: &mut Vec<f32>) {
     }
 }
 
-/// A malformed or truncated access unit is skipped like any other bad packet.
-/// Lifecycle, budget and unsupported-profile errors mean the stream itself
-/// cannot continue and are surfaced by the caller.
+/// Check if an AAC error is a packet-level error.
 fn is_packet_error(error: &syom::AacError) -> bool {
     matches!(
         error,

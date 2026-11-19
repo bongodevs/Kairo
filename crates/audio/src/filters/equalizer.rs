@@ -110,7 +110,6 @@ struct Coefficients {
     gamma: f32,
 }
 
-// Preserve the published decimal coefficients; each rounds to f32 at compile time.
 #[allow(clippy::excessive_precision)]
 const COEFFICIENTS: [Coefficients; BAND_COUNT] = [
     Coefficients { beta: 9.9847546664e-1, alpha: 7.6226668143e-4, gamma: 1.9984647656 },

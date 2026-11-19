@@ -255,31 +255,28 @@ impl BlockingDecoder {
     }
 }
 
-/// Whether the source hints name an ISO base media file. The edit-list scan
-/// seeks to the end of the stream, and an HTTP source reopens for such a seek;
-/// only pay that cost when the container can actually carry `elst`.
 fn hints_are_mp4(hints: &SourceHints) -> bool {
     const EXTENSIONS: [&str; 5] = ["m4a", "m4b", "m4p", "mp4", "mov"];
-    let extension = hints.file_extension.as_deref().is_some_and(|extension| {
-        EXTENSIONS.iter().any(|known| extension.eq_ignore_ascii_case(known))
-    });
-    let mime = hints.mime_type.as_deref().is_some_and(|mime| {
-        let mime = mime.to_ascii_lowercase();
-        mime.contains("mp4") || mime.contains("m4a") || mime.contains("quicktime")
-    });
-    extension || mime
+    hints
+        .file_extension
+        .as_deref()
+        .is_some_and(|ext| EXTENSIONS.iter().any(|k| ext.eq_ignore_ascii_case(k)))
+        || hints.mime_type.as_deref().is_some_and(|m| {
+            let m = m.to_ascii_lowercase();
+            m.contains("mp4") || m.contains("m4a") || m.contains("quicktime")
+        })
 }
 
 fn hints_are_matroska(hints: &SourceHints) -> bool {
     const EXTENSIONS: [&str; 5] = ["mkv", "mka", "mks", "mk3d", "webm"];
-    let extension = hints.file_extension.as_deref().is_some_and(|extension| {
-        EXTENSIONS.iter().any(|known| extension.eq_ignore_ascii_case(known))
-    });
-    let mime = hints.mime_type.as_deref().is_some_and(|mime| {
-        let mime = mime.to_ascii_lowercase();
-        mime.contains("matroska") || mime.contains("webm")
-    });
-    extension || mime
+    hints
+        .file_extension
+        .as_deref()
+        .is_some_and(|ext| EXTENSIONS.iter().any(|k| ext.eq_ignore_ascii_case(k)))
+        || hints.mime_type.as_deref().is_some_and(|m| {
+            let m = m.to_ascii_lowercase();
+            m.contains("matroska") || m.contains("webm")
+        })
 }
 
 struct DecodedPcm {

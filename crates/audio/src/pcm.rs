@@ -69,10 +69,6 @@ pub enum ResamplingQuality {
 }
 
 /// Sinc window width for `MEDIUM` and `HIGH`, in taps.
-///
-/// 64 taps are flat to 15 kHz and 128 taps to 18 kHz for 44.1 kHz sources, while the cost grows
-/// almost linearly. `HIGH` sits at 128 taps: the audible band is intact and it costs about half of
-/// rubato's 256-tap, cubic-interpolated default.
 const MEDIUM_TAPS: usize = 64;
 const HIGH_TAPS: usize = 128;
 

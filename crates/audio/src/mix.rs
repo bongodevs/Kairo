@@ -399,9 +399,6 @@ const TAPE_BITRATE_BPS: i32 = 99_000;
 const TAPE_COMPLEXITY: i32 = 10;
 
 /// Consumer-side tape-machine ramp for one player.
-///
-/// The buffer stores Opus packets, so the ramp decodes the buffered input, resamples it with a
-/// time-varying rate and re-encodes the result. It is created only while a ramp is engaged.
 pub struct TapeRuntime {
     effect: TapeEffect,
     decoder: OpusDecoder,

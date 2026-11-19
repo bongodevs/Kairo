@@ -121,7 +121,6 @@ fn samples_per_frame(toc: u8) -> usize {
 
 fn validate_layout(packet: &[u8]) -> Result<usize, PacketError> {
     match packet[0] & 0x03 {
-        // A TOC-only code-0 packet is legal DTX.
         0 => Ok(1),
         1 => {
             let payload = packet.len() - 1;
@@ -220,7 +219,6 @@ pub struct OpusEncoderConfig {
 impl Default for OpusEncoderConfig {
     fn default() -> Self {
         Self {
-            // libopus OPUS_AUTO at 48 kHz stereo, 20 ms: 60*Fs/frame + Fs*channels.
             bitrate_bps: 99_000,
             complexity: 10,
             use_cbr: false,

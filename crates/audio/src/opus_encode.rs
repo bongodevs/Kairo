@@ -69,8 +69,7 @@ impl OpusFrameEncoder {
         result
     }
 
-    /// Filters that run before timescale, in reference signal order: the plugin group first, then
-    /// the built-in low-pass, channel mix, rotation, distortion, vibrato and tremolo.
+    /// Filters that run before timescale in signal order.
     fn process_pre_timescale(&mut self, samples: &mut [f32]) {
         if let Some(high_pass) = self.high_pass.as_mut() {
             high_pass.process(samples);
@@ -104,8 +103,7 @@ impl OpusFrameEncoder {
         }
     }
 
-    /// Filters that run after timescale, in reference signal order: karaoke, equalizer and the
-    /// floating filter volume. Player volume stays last and is applied during final encoding.
+    /// Filters that run after timescale in signal order.
     fn process_post_timescale(&mut self, samples: &mut [f32]) {
         if let Some(karaoke) = self.karaoke.as_mut() {
             karaoke.process(samples);
@@ -490,9 +488,7 @@ impl OpusFrameEncoder {
         self.reset_processing();
     }
 
-    /// Continue the current partial frame with a new track's timeline. When the frame already
-    /// holds samples from the outgoing track, the new position takes effect once that frame has
-    /// been encoded, so a gapless hand-off does not drop or duplicate audio.
+    /// Continue the current partial frame with a new track's timeline.
     pub fn rebase(&mut self, position: Millis) {
         if self.pcm_frames == 0 {
             self.position_micros = position.get() as f64 * 1_000.0;
