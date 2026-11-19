@@ -5,9 +5,6 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// A thread-safe map of live players keyed by an external identifier.
-///
-/// The registry only stores handles. Creating the player and wiring its transport stays with the
-/// host, so this type works for guilds, channels, or any other stable key.
 pub struct PlayerRegistry<K, V> {
     entries: Mutex<HashMap<K, Arc<V>>>,
 }

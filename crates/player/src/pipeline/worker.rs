@@ -130,7 +130,6 @@ impl WorkerState {
         self.pending.clear();
         self.ending = false;
         self.clear_transition_state();
-        // Keep the last reported position; the new timeline starts at the same millisecond.
         self.producer.clear_now_preserving_output();
         self.producer.awaiting_frame();
     }

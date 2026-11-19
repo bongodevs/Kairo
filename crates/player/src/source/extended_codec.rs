@@ -45,7 +45,6 @@ impl SourcePayloadCodec for ExtendedTrackCodec {
             preview_url: input.optional_text()?,
             is_preview: input.boolean()?,
         };
-        // Reject a payload that only partially matches so it stays opaque.
         if input.consumed() != payload.len() {
             return Err(TrackCodecError::WrongSourceData);
         }

@@ -78,8 +78,7 @@ impl PlayerEvents {
     }
 }
 
-/// Event delivery for one player. A stalled observer loses new events; it never stalls the
-/// playback owner.
+/// Event delivery for one player.
 impl PlayerOwner {
     pub(crate) async fn emit_event(&mut self, event: PlayerEvent) {
         let _ = self.events.try_send(event);

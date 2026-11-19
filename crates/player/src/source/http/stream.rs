@@ -53,8 +53,6 @@ impl CachedRange {
             self.bytes.clear();
             self.head = 0;
         } else if self.head * 2 >= self.bytes.len() {
-            // Moving only when the dead prefix is at least half keeps the amortized copy cost
-            // below one byte per cached byte.
             self.bytes.drain(..self.head);
             self.head = 0;
         }
@@ -571,8 +569,6 @@ impl AsyncSeek for HttpStream {
         if target == current {
             return Ok(());
         }
-        // A read may have started an open that is still in flight. Dropping it is safe, but the
-        // next read then has to ask for a body at the new position.
         let pending_open = matches!(stream.state, ReadState::Opening { .. });
         if pending_open {
             stream.body_position = current;
@@ -588,8 +584,6 @@ impl AsyncSeek for HttpStream {
             stream.seek = None;
             return Ok(());
         }
-        // Skip from the body, discarding any already-cached bytes before it. A forward seek does
-        // not need those bytes, so the body never has to be fetched again for them.
         stream.seek = if !pending_open
             && target > current
             && target - current <= MAX_SKIP_DISTANCE

@@ -116,9 +116,7 @@ impl Player {
         self.request(|reply| Command::Seek { position, reply }).await
     }
 
-    /// Swap the active track's media for an already opened source without restarting the track or
-    /// emitting an event. Returns `false` when there is no active track or the source cannot start
-    /// at `position`.
+    /// Swap the active track's media without restarting the track or emitting an event.
     pub async fn replace_media(
         &self,
         playback: OpenedSource,
@@ -148,8 +146,7 @@ impl Player {
         self.request(|reply| Command::Tape { options, reply }).await
     }
 
-    /// Pre-buffer the track that should follow the current one. Returns `false` when there is no
-    /// active track or no transition configured.
+    /// Pre-buffer the track that should follow the current one.
     pub async fn prepare_next(&self, track: impl Into<Track>) -> Result<bool, PlayerError> {
         self.request(|reply| Command::PrepareNext { track: track.into(), reply }).await
     }
@@ -294,7 +291,6 @@ async fn next_input(owner: &mut PlayerOwner, commands: &mut mpsc::Receiver<Comma
             tokio::select! {
                 biased;
                 result = join => Input::Worker(Box::new(result)),
-                // promotion is published before successor frames, so apply it before their end
                 sequence = promotion.wait_for(promotion_seen) => Input::Promotion(sequence),
                 sequence = buffer.wait_for_end(seen) => Input::BufferEnd(sequence),
                 sequence = buffer.wait_for_stuck(stuck_seen) => Input::Stuck(sequence),

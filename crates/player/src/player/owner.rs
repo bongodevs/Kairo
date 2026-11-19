@@ -382,7 +382,6 @@ impl PlayerOwner {
         Ok(sought)
     }
 
-    // Boxed so the player command loop does not carry this future's state on its own stack.
     pub(crate) fn replace_media(
         &mut self,
         playback: OpenedSource,

@@ -42,8 +42,7 @@ pub(crate) fn is_direct(identifier: &str) -> bool {
 
 /// Build the outbound client policy shared by direct streams and provider APIs.
 ///
-/// A zero connect or read timeout leaves that side of the request unbounded, matching the
-/// reference's millisecond settings.
+/// A zero connect or read timeout leaves that side of the request unbounded.
 pub(crate) fn client(
     connect: Duration,
     read: Duration,
@@ -51,7 +50,6 @@ pub(crate) fn client(
     proxy: Option<&ProxyConfig>,
     local_address: Option<IpAddr>,
 ) -> Result<Client, SourceError> {
-    // The process may already have installed ring; keeping that provider is intentional.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let builder = Client::builder()
         .redirect(redirect)
