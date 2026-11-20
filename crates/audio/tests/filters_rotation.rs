@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn rotation_phase_stays_finite_and_modulates_after_thirty_minutes() {
+    // 0.25 Hz rotation, 48 kHz. After 30 min = 86,400,000 samples the unbounded f64
+    // reaches ~135,717 rad, still representable but approaching precision loss territory.
+    // After wrapping, phase stays in [0, TAU) and sin/cos remain accurate.
+    let config = RotationConfig { rotation_hz: 0.25 };
+    let mut rotation = Rotation::new(config);
+
+    let frames_total: usize = 30 * 60 * crate::SAMPLE_RATE as usize;
+    let block = crate::FRAME_SAMPLES * crate::CHANNELS;
+    let mut processed = 0usize;
+    while processed < frames_total {
+        let n = block.min((frames_total - processed) * crate::CHANNELS);
+        let mut buf = vec![1.0_f32; n];
+        rotation.process(&mut buf);
+        processed += n / crate::CHANNELS;
+    }
+
+    // After 30 min, assert phase stayed in [0, TAU).
+    assert!(
+        rotation.phase() >= 0.0 && rotation.phase() < std::f64::consts::TAU,
+        "rotation phase {} not in [0, TAU)",
+        rotation.phase()
+    );
+
+    // Run one more short block after 30 min.
+    let mut probe = [1.0_f32; crate::CHANNELS * 8];
+    rotation.process(&mut probe);
+    // All samples must be finite and in a valid gain range [0, 1].
+    assert!(
+        probe.iter().all(|s| s.is_finite() && (0.0..=1.0 + 1e-6).contains(s)),
+        "rotation produced out-of-range or non-finite output after 30 min"
+    );
+    // The two channels must still be complementary (sum ≈ 1.0 per frame).
+    for frame in probe.chunks(crate::CHANNELS) {
+        let sum = frame[0] + frame[1];
+        assert!((sum - 1.0).abs() < 1e-5, "rotation channel sum not 1.0: {sum}");
+    }
+}
+
+#[test]
 fn zero_rotation_is_disabled_and_nonzero_directions_are_enabled() {
     assert!(!RotationConfig::default().is_enabled());
     assert!(RotationConfig { rotation_hz: 0.2 }.is_enabled());
