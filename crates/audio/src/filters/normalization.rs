@@ -26,15 +26,14 @@ impl Normalization {
         if !self.adaptive {
             self.peak = 0.0;
         }
-        for channel in 0..2 {
-            for frame in samples.as_chunks::<CHANNELS>().0 {
-                self.peak = self.peak.max(frame[channel].abs());
-            }
-            if self.peak > self.max_amplitude {
-                let gain = self.max_amplitude / self.peak;
-                for frame in samples.as_chunks_mut::<CHANNELS>().0 {
-                    frame[channel] *= gain;
-                }
+        for frame in samples.as_chunks::<CHANNELS>().0 {
+            self.peak = self.peak.max(frame[0].abs()).max(frame[1].abs());
+        }
+        if self.peak > self.max_amplitude {
+            let gain = self.max_amplitude / self.peak;
+            for frame in samples.as_chunks_mut::<CHANNELS>().0 {
+                frame[0] *= gain;
+                frame[1] *= gain;
             }
         }
     }
