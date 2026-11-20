@@ -9,6 +9,49 @@ use super::*;
 use crate::decode::BlockingDecoder;
 use crate::pcm::{PcmNormalizer, ResamplingQuality};
 use crate::test_wav as wav;
+
+#[tokio::test]
+async fn native_stereo_pcm_reaches_the_unity_encoder_bit_exact() {
+    let runtime = Handle::current();
+    let bytes: Arc<[u8]> = wav::pcm_wave(SAMPLE_RATE, CHANNELS as u16, FRAME_SAMPLES as u32).into();
+    let length = u64::try_from(bytes.len()).expect("fixture length");
+    tokio::task::spawn_blocking(move || {
+        let source = OpenedSource::seekable(
+            "memory",
+            SourceReference::new("native.wav"),
+            SourceHints {
+                mime_type: Some(String::from("audio/wav")),
+                file_extension: Some(String::from("wav")),
+            },
+            Some(length),
+            Cursor::new(bytes),
+        );
+        let mut decoder = BlockingDecoder::open(source, runtime).expect("decoder");
+        let block = decoder.next_block().expect("decode").expect("PCM block");
+        assert_eq!(block.format, OUTPUT_FORMAT);
+        assert_eq!(block.frames, FRAME_SAMPLES);
+        let expected = block.samples.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>();
+        let mut normalizer = PcmNormalizer::new(ResamplingQuality::High);
+        let mut encoder = OpusFrameEncoder::new(OpusEncoderConfig::default()).expect("encoder");
+        let mut emitted = false;
+
+        normalizer
+            .process(block, |block| {
+                assert_eq!(
+                    block.samples.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>(),
+                    expected
+                );
+                encoder.process(block, |_| emitted = true).expect("encode");
+            })
+            .expect("normalize");
+
+        assert!(emitted);
+        assert_eq!(encoder.pcm.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>(), expected);
+    })
+    .await
+    .expect("player worker");
+}
+
 #[tokio::test]
 async fn source_decode_resample_and_encode_run_as_one_worker_pipeline() {
     let runtime = Handle::current();

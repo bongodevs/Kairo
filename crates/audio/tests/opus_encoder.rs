@@ -265,17 +265,41 @@ fn invalid_settings_and_pcm_are_typed_errors() {
 }
 
 #[test]
-fn pcm_guard_replaces_non_finite_samples_and_clamps() {
+fn pcm_guard_replaces_non_finite_samples_and_preserves_finite_bits() {
     let mut samples = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2.5, -3.0, 0.5, -0.75, 0.0];
     sanitize_pcm(&mut samples);
     assert_eq!(samples[0], 0.0, "NaN should be replaced with 0.0");
     assert_eq!(samples[1], 0.0, "Infinity should be replaced with 0.0");
     assert_eq!(samples[2], 0.0, "-Infinity should be replaced with 0.0");
-    assert_eq!(samples[3], 1.0, "2.5 should clamp to 1.0");
-    assert_eq!(samples[4], -1.0, "-3.0 should clamp to -1.0");
+    assert_eq!(samples[3].to_bits(), 2.5f32.to_bits());
+    assert_eq!(samples[4].to_bits(), (-3.0f32).to_bits());
     assert_eq!(samples[5], 0.5, "0.5 should be preserved");
     assert_eq!(samples[6], -0.75, "-0.75 should be preserved");
     assert_eq!(samples[7], 0.0, "0.0 should be preserved");
+}
+
+#[test]
+fn unity_processing_keeps_every_finite_sample_bit_at_the_encoder() {
+    let pattern = [-1.25, -1.0, -0.0, f32::MIN_POSITIVE, 0.25, 1.0, 1.125, 0.0];
+    let samples = pattern.into_iter().cycle().take(FRAME_SAMPLES * CHANNELS).collect::<Vec<_>>();
+    let expected = samples.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>();
+    let mut encoder = OpusFrameEncoder::new(OpusEncoderConfig::default()).expect("encoder");
+    let mut emitted = false;
+
+    encoder
+        .process(
+            PcmBlock {
+                samples: &samples,
+                format: OUTPUT_FORMAT,
+                frames: FRAME_SAMPLES,
+                position: Millis::default(),
+            },
+            |_| emitted = true,
+        )
+        .expect("encode unity frame");
+
+    assert!(emitted);
+    assert_eq!(encoder.pcm.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>(), expected);
 }
 
 #[test]
