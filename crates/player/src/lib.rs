@@ -7,6 +7,9 @@ pub mod manager;
 mod pipeline;
 mod player;
 pub mod track;
+pub use track::marker::{
+    MarkerId, MarkerState, TrackMarker, TrackMarkerHandler, TrackMarkerTracker,
+};
 
 pub mod buffer;
 pub mod playback;

@@ -196,3 +196,32 @@ async fn finish_is_ordered_after_audio_and_reader_close_wakes_writers() {
     consumer.close();
     assert!(matches!(blocked.await.expect("writer task"), Err(BufferError::Closed)));
 }
+
+#[tokio::test]
+async fn raw_pcm_s16_frame_buffer_roundtrip() {
+    use crate::buffer::{FrameFormat, MAX_PCM_S16_BYTES};
+
+    let config = FrameBufferConfig::with_format(200, FrameFormat::PcmS16Le).expect("config");
+    assert_eq!(config.format(), FrameFormat::PcmS16Le);
+    assert_eq!(config.maximum_packet_bytes(), config.capacity() * MAX_PCM_S16_BYTES);
+
+    let (mut producer, mut consumer) = frame_buffer(config);
+    assert_eq!(producer.format(), FrameFormat::PcmS16Le);
+    assert_eq!(consumer.format(), FrameFormat::PcmS16Le);
+
+    let samples: Vec<i16> = (0..1_920).map(|i| (i as i16).wrapping_mul(17)).collect();
+    let frame =
+        BufferedFrame::new_pcm_s16(&samples, Millis::new(40), FRAME_SAMPLES).expect("pcm frame");
+    assert_eq!(frame.format(), FrameFormat::PcmS16Le);
+
+    producer.send(frame).await.expect("send");
+
+    let mut output = [0i16; 1_920];
+    let read = consumer.read_pcm_s16(&mut output).expect("read");
+    let BufferRead::Frame(meta) = read else {
+        panic!("expected frame");
+    };
+    assert_eq!(meta.position.get(), 40);
+    assert_eq!(meta.packet_length as usize, MAX_PCM_S16_BYTES);
+    assert_eq!(output, samples.as_slice());
+}

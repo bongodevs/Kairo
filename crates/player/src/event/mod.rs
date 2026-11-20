@@ -55,7 +55,7 @@ pub enum PlayerEvent {
     TrackStart { track: TrackSnapshot },
     TrackEnd { track: TrackSnapshot, reason: TrackEndReason },
     TrackException { track: TrackSnapshot, exception: TrackException },
-    TrackStuck { track: TrackSnapshot, threshold_ms: u64 },
+    TrackStuck { track: TrackSnapshot, threshold_ms: u64, stack_trace: Option<String> },
     Paused { track: TrackSnapshot },
     Resumed { track: TrackSnapshot },
 }
@@ -91,7 +91,9 @@ impl PlayerOwner {
     ) -> Result<(), PlayerError> {
         self.end_time = None;
         self.disarm_cleanup();
-        self.buffer.end_track();
+        if reason != TrackEndReason::Replaced {
+            self.buffer.end_track();
+        }
         if let Some(track) = self.track.take() {
             self.emit_event(PlayerEvent::TrackEnd { track: track.snapshot(position), reason })
                 .await;

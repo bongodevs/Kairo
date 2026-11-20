@@ -129,11 +129,17 @@ impl PlayerOwner {
     }
 
     pub(crate) fn launch(&mut self, state: WorkerState) {
-        let signal =
-            WorkerSignal::new(self.end_time, state.buffer_control(), Arc::clone(&self.promotion));
+        state.interrupt_handle().reset();
+        let signal = WorkerSignal::new(
+            self.end_time,
+            state.buffer_control(),
+            Arc::clone(&self.promotion),
+            state.interrupt_handle(),
+        );
         let worker_signal = signal.clone();
         let runtime = self.runtime.clone();
-        let join = tokio::task::spawn_blocking(move || run_worker(state, worker_signal, runtime));
+        let state = Box::new(state);
+        let join = tokio::task::spawn_blocking(move || run_worker(*state, worker_signal, runtime));
         self.playback = Playback::Running { signal, join };
     }
 
@@ -370,6 +376,7 @@ impl PlayerOwner {
             }
         };
         if sought {
+            self.buffer.markers().check_seek(position);
             self.end_seen = self.buffer.end_sequence();
         }
         state.producer_mut().set_end_time(self.end_time);
@@ -424,9 +431,11 @@ impl PlayerOwner {
         let Some(track) = self.track.as_ref().map(|track| track.snapshot(position)) else {
             return;
         };
+        let stack_trace = Some(std::backtrace::Backtrace::force_capture().to_string());
         self.emit_event(PlayerEvent::TrackStuck {
             track,
             threshold_ms: self.buffer.stuck_threshold_ms(),
+            stack_trace,
         })
         .await;
     }

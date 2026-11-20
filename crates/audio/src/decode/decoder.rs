@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use symphonia::core::codecs::audio::well_known::CODEC_ID_AAC;
 use symphonia::core::errors::Error as MediaError;
 use symphonia::core::formats::probe::Hint;
@@ -45,6 +47,7 @@ pub struct BlockingDecoder {
     fallback_nanos: u128,
     stats: DecodeStats,
     finished: bool,
+    interrupt: Arc<super::InterruptHandle>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,7 +74,7 @@ impl BlockingDecoder {
             hint.mime_type(mime_type);
         }
 
-        let mut input = DecoderInput::new(source, runtime);
+        let (mut input, interrupt) = DecoderInput::new(source, runtime);
         let edit_list = (seekable && has_mp4_hint).then(|| mp4::read(&mut input)).flatten();
         let matroska = (seekable && has_mkv_hint).then(|| mkv::read(&mut input)).flatten();
         let stream = MediaSourceStream::new(
@@ -153,7 +156,13 @@ impl BlockingDecoder {
             fallback_nanos: 0,
             stats: DecodeStats::default(),
             finished: false,
+            interrupt,
         })
+    }
+
+    #[must_use]
+    pub fn interrupt_handle(&self) -> Arc<super::InterruptHandle> {
+        Arc::clone(&self.interrupt)
     }
 
     #[must_use]

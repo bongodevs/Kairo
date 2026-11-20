@@ -29,10 +29,10 @@ impl PlayerError {
         match self {
             Self::NoMatches => crate::ExceptionSeverity::Common,
             Self::Source(error) => error.severity(),
+            Self::Decode(error) => error.severity(),
             Self::Stopped
             | Self::WorkerGone
             | Self::WorkerBurst
-            | Self::Decode(_)
             | Self::Pcm(_)
             | Self::Opus(_)
             | Self::Buffer(_) => crate::ExceptionSeverity::Fault,

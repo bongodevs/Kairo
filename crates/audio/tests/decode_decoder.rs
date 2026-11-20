@@ -185,3 +185,35 @@ async fn adts_is_registered_as_a_native_aac_container() {
     assert_eq!(info.native_format, Some(AudioFormat::new(48_000, 2).expect("format")));
     assert!(frames > 0);
 }
+
+#[tokio::test]
+async fn interrupt_unblocks_blocking_read_promptly() {
+    let bytes = wav::pcm_wave(48_000, 2, 48_000);
+    let length = bytes.len() as u64;
+    let source = OpenedSource::read_only(
+        "memory",
+        SourceReference::new("stream.wav"),
+        SourceHints {
+            mime_type: Some(String::from("audio/wav")),
+            file_extension: Some(String::from("wav")),
+        },
+        Some(length),
+        Cursor::new(bytes),
+    );
+    let runtime = Handle::current();
+    let is_err = tokio::task::spawn_blocking(move || {
+        let mut decoder = BlockingDecoder::open(source, runtime)?;
+        let interrupt = decoder.interrupt_handle();
+        interrupt.interrupt();
+        assert!(interrupt.is_interrupted());
+        let res = decoder.next_block().is_err();
+        interrupt.reset();
+        assert!(!interrupt.is_interrupted());
+        Ok::<_, DecodeError>(res)
+    })
+    .await
+    .expect("blocking task")
+    .expect("open decoder");
+
+    assert!(is_err, "interrupted read should return error");
+}

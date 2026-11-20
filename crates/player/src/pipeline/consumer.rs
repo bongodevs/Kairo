@@ -7,7 +7,8 @@ use tokio::sync::mpsc;
 use kairo_audio::mix::TapeRuntime;
 
 use super::{
-    BufferError, BufferRead, BufferedFrame, FrameMeta, NO_POSITION, Queued, State, decrement,
+    BufferError, BufferRead, BufferedFrame, FrameFormat, FrameMeta, MAX_PCM_S16_BYTES, NO_POSITION,
+    Queued, State, decrement,
 };
 use crate::audio::FRAME_SAMPLES;
 use crate::decode::Millis;
@@ -30,17 +31,24 @@ pub struct FrameConsumer {
     tape_epoch: u64,
     tape_enabled: bool,
     last_paused: bool,
+    format: FrameFormat,
 }
 
+// BufferedFrame is kept on the stack to ensure zero heap allocations on the 20 ms consumer hot path.
+#[allow(clippy::large_enum_variant)]
 enum Taken {
-    Frame(u64, Box<BufferedFrame>),
+    Frame(u64, BufferedFrame),
     End,
     Empty,
     Closed,
 }
 
 impl FrameConsumer {
-    pub(super) fn new(receiver: mpsc::Receiver<Queued>, state: Arc<State>) -> Self {
+    pub(super) fn new(
+        receiver: mpsc::Receiver<Queued>,
+        state: Arc<State>,
+        format: FrameFormat,
+    ) -> Self {
         Self {
             receiver,
             state,
@@ -58,6 +66,7 @@ impl FrameConsumer {
             tape_epoch: 0,
             tape_enabled: false,
             last_paused: false,
+            format,
         }
     }
 
@@ -86,6 +95,36 @@ impl FrameConsumer {
             Ok(BufferRead::Frame(meta)) => Some(usize::from(meta.packet_length)),
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub const fn format(&self) -> FrameFormat {
+        self.format
+    }
+
+    /// Read an unencoded 16-bit PCM frame directly into an `i16` slice.
+    pub fn read_pcm_s16(&mut self, output: &mut [i16]) -> Result<BufferRead, BufferError> {
+        let mut byte_buf = [0u8; MAX_PCM_S16_BYTES];
+        let read = self.read(&mut byte_buf)?;
+        if let BufferRead::Frame(meta) = read {
+            let sample_count = usize::from(meta.packet_length) / 2;
+            if output.len() < sample_count {
+                return Err(BufferError::OutputTooSmall {
+                    required: sample_count * 2,
+                    available: output.len() * 2,
+                });
+            }
+            let (chunks, _) = byte_buf[..usize::from(meta.packet_length)].as_chunks::<2>();
+            for (i, chunk) in chunks.iter().enumerate() {
+                output[i] = i16::from_le_bytes(*chunk);
+            }
+        }
+        Ok(read)
+    }
+
+    #[must_use]
+    pub fn markers(&self) -> Arc<crate::track::marker::TrackMarkerTracker> {
+        Arc::clone(&self.state.markers)
     }
 
     pub fn close(&mut self) {
@@ -125,7 +164,7 @@ impl FrameConsumer {
                 let packet = frame.packet();
                 if output.len() < packet.len() {
                     let required = packet.len();
-                    self.pending = Some(Queued { generation, frame: Some(*frame) });
+                    self.pending = Some(Queued { generation, frame: Some(frame) });
                     return Err(BufferError::OutputTooSmall { required, available: output.len() });
                 }
                 output[..packet.len()].copy_from_slice(packet);
@@ -133,6 +172,7 @@ impl FrameConsumer {
                 self.state.output_volume.store(volume.level(), Ordering::Relaxed);
                 self.state.output_position.store(meta.position.get(), Ordering::Release);
                 self.state.next_output_position.store(next_position.get(), Ordering::Release);
+                self.state.markers.check_playback(meta.position);
                 self.produced = true;
                 self.stalled_since = None;
                 self.progress = self.state.worker_progress.load(Ordering::Acquire);
@@ -159,6 +199,7 @@ impl FrameConsumer {
                     self.state
                         .next_output_position
                         .store(position.get().saturating_add(20), Ordering::Release);
+                    self.state.markers.check_playback(position);
                     self.produced = true;
                     self.stalled_since = None;
                     self.progress = self.state.worker_progress.load(Ordering::Acquire);
@@ -244,7 +285,7 @@ impl FrameConsumer {
                         self.mark_end();
                         return Ok(Taken::End);
                     }
-                    return Ok(Taken::Frame(generation, Box::new(frame)));
+                    return Ok(Taken::Frame(generation, frame));
                 }
                 None => {
                     decrement(&self.state.depth);

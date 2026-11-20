@@ -28,6 +28,27 @@ fn exception_severity_distinguishes_load_input_from_playback_faults() {
         .severity,
         ExceptionSeverity::Suspicious
     );
+    assert_eq!(
+        TrackException::from_error(&PlayerError::Decode(
+            kairo_audio::decode::DecodeError::NoAudioTrack
+        ))
+        .severity,
+        ExceptionSeverity::Common
+    );
+    assert_eq!(
+        TrackException::from_error(&PlayerError::Decode(kairo_audio::decode::DecodeError::Aac {
+            message: "corrupt frame".into()
+        }))
+        .severity,
+        ExceptionSeverity::Suspicious
+    );
+    assert_eq!(
+        TrackException::from_error(&PlayerError::Decode(
+            kairo_audio::decode::DecodeError::InvalidAudioFormat
+        ))
+        .severity,
+        ExceptionSeverity::Fault
+    );
 }
 
 #[tokio::test]
@@ -160,8 +181,8 @@ async fn stuck_notification_carries_the_configured_threshold_without_ending_the_
     owner.stuck_detected().await;
     assert!(matches!(
         events.recv().await,
-        Some(PlayerEvent::TrackStuck { track: stuck, threshold_ms: 250 })
-            if stuck == track
+        Some(PlayerEvent::TrackStuck { track: stuck, threshold_ms: 250, stack_trace })
+            if stuck == track && stack_trace.is_some()
     ));
     assert_eq!(owner.track.as_ref().map(|track| track.reference()), Some(&track));
 }

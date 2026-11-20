@@ -129,7 +129,7 @@ fn log_event(session_id: &str, guild_id: super::GuildId, event: &PlayerEvent) {
             reason = end_reason(*reason),
             "track ended"
         ),
-        PlayerEvent::TrackStuck { track, threshold_ms } => tracing::warn!(
+        PlayerEvent::TrackStuck { track, threshold_ms, .. } => tracing::warn!(
             session_id,
             guild_id = %guild_id,
             track = track.reference().identifier(),
@@ -184,7 +184,7 @@ fn event_message(
                 "causeStackTrace": exception.cause_stack_trace,
             },
         }),
-        PlayerEvent::TrackStuck { track, threshold_ms } => json!({
+        PlayerEvent::TrackStuck { track, threshold_ms, .. } => json!({
             "op": "event",
             "type": "TrackStuckEvent",
             "guildId": guild_id.to_string(),

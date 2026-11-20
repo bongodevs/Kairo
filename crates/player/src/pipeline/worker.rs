@@ -88,6 +88,11 @@ impl WorkerState {
         self.producer.control()
     }
 
+    #[must_use]
+    pub(crate) fn interrupt_handle(&self) -> Arc<crate::decode::InterruptHandle> {
+        self.decoder.interrupt_handle()
+    }
+
     pub(crate) fn is_seekable(&self) -> bool {
         self.decoder.info().seekable
     }
@@ -105,6 +110,7 @@ impl WorkerState {
     }
 
     pub(crate) fn seek(&mut self, position: Millis) -> Result<bool, PlayerError> {
+        self.decoder.interrupt_handle().reset();
         if !self.decoder.seek(position)? {
             return Ok(false);
         }

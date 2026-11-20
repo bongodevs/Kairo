@@ -15,7 +15,9 @@ use crate::opus::OpusFrameEncoder;
 use crate::pipeline::{Playback, WorkerEnd, WorkerState};
 use crate::player::PlayerOwner;
 
+pub mod marker;
 pub(crate) mod transition;
+pub use marker::*;
 
 impl PlayerOwner {
     pub(crate) async fn play(
@@ -51,6 +53,7 @@ impl PlayerOwner {
             );
         }
 
+        let replacing = self.track.is_some();
         self.settle().await?;
         self.next = None;
         let end_time = self.end_time;
@@ -68,12 +71,17 @@ impl PlayerOwner {
             self.filters,
         ) {
             Ok(state) => state,
-            Err((error, producer)) => {
+            Err((error, mut producer)) => {
+                producer.clear_now();
                 self.playback = Playback::Idle(producer);
                 return Err(error);
             }
         };
-        state.producer_mut().begin_track();
+        if replacing {
+            state.producer_mut().begin_replacement_track();
+        } else {
+            state.producer_mut().begin_track();
+        }
         state.producer_mut().set_paused(self.paused);
         state.producer_mut().set_end_time(self.end_time);
         let snapshot = track.snapshot(initial_position);
@@ -113,11 +121,16 @@ impl PlayerOwner {
             Playback::Empty => return Err(PlayerError::WorkerGone),
         };
         state.clear_transition_state();
-        state.producer_mut().clear_now();
-        state.producer_mut().end_track();
+        if reason == TrackEndReason::Replaced {
+            state.producer_mut().clear_on_insert();
+        } else {
+            state.producer_mut().clear_now();
+            state.producer_mut().end_track();
+        }
         state.producer_mut().set_paused(self.paused);
         state.producer_mut().set_end_time(None);
         self.playback = Playback::Idle(state.into_producer());
+        self.buffer.markers().trigger_all(MarkerState::Stopped);
         self.emit_end(reason, position).await
     }
 
@@ -259,11 +272,16 @@ impl PlayerOwner {
         let position = self.current_position();
         self.next = None;
         state.clear_transition_state();
-        state.producer_mut().clear_now();
-        state.producer_mut().end_track();
+        if reason == TrackEndReason::Replaced {
+            state.producer_mut().clear_on_insert();
+        } else {
+            state.producer_mut().clear_now();
+            state.producer_mut().end_track();
+        }
         state.producer_mut().set_paused(self.paused);
         state.producer_mut().set_end_time(None);
         self.playback = Playback::Idle(state.into_producer());
+        self.buffer.markers().trigger_all(MarkerState::Ended);
         self.emit_end(reason, position).await
     }
 
@@ -274,6 +292,7 @@ impl PlayerOwner {
     ) -> Result<(), PlayerError> {
         let error = PlayerError::WorkerGone;
         self.emit_exception(&error).await;
+        self.buffer.markers().trigger_all(MarkerState::Ended);
         self.buffer.end_track();
         self.playback = Playback::Empty;
         let position = self.current_position();

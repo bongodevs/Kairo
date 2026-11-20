@@ -23,3 +23,4 @@ pub use kairo_core::{AudioFormat, Millis, StreamInfo, TrackMetadata};
 pub use self::block::{AudioBlock, DecodeStats, OpusBlock, PcmBlock};
 pub use self::decoder::{BlockingDecoder, PacketAudio};
 pub use self::error::DecodeError;
+pub use self::input::InterruptHandle;

@@ -14,6 +14,7 @@ use crate::pipeline::{
 use crate::player::{PlayerOwner, PlayerState};
 use crate::source::{OpenedSource, Sources};
 use crate::track::Track;
+use crate::track::marker::{MarkerId, TrackMarker};
 use crate::volume::Volume;
 
 pub(crate) enum Command {
@@ -76,6 +77,18 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<(), PlayerError>>,
     },
     TransitionNow {
+        reply: oneshot::Sender<Result<bool, PlayerError>>,
+    },
+    SetMarker {
+        marker: Option<TrackMarker>,
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    AddMarker {
+        marker: TrackMarker,
+        reply: oneshot::Sender<Result<(), PlayerError>>,
+    },
+    RemoveMarker {
+        id: MarkerId,
         reply: oneshot::Sender<Result<bool, PlayerError>>,
     },
     Shutdown {
@@ -175,6 +188,18 @@ impl Player {
 
     pub async fn set_user_data(&self, user_data: Map<String, Value>) -> Result<bool, PlayerError> {
         self.request(|reply| Command::UserData { user_data, reply }).await
+    }
+
+    pub async fn set_marker(&self, marker: Option<TrackMarker>) -> Result<(), PlayerError> {
+        self.request(|reply| Command::SetMarker { marker, reply }).await
+    }
+
+    pub async fn add_marker(&self, marker: TrackMarker) -> Result<(), PlayerError> {
+        self.request(|reply| Command::AddMarker { marker, reply }).await
+    }
+
+    pub async fn remove_marker(&self, id: MarkerId) -> Result<bool, PlayerError> {
+        self.request(|reply| Command::RemoveMarker { id, reply }).await
     }
 
     async fn shutdown(&self) -> Result<(), PlayerError> {
@@ -374,6 +399,20 @@ async fn dispatch(owner: &mut PlayerOwner, command: Command) {
         Command::TransitionNow { reply } => {
             let result = owner.transition_now().await;
             let _ = reply.send(result);
+        }
+        Command::SetMarker { marker, reply } => {
+            let position = owner.current_position();
+            owner.buffer.markers().set(marker, position);
+            let _ = reply.send(Ok(()));
+        }
+        Command::AddMarker { marker, reply } => {
+            let position = owner.current_position();
+            owner.buffer.markers().add(marker, position);
+            let _ = reply.send(Ok(()));
+        }
+        Command::RemoveMarker { id, reply } => {
+            let removed = owner.buffer.markers().remove(id);
+            let _ = reply.send(Ok(removed));
         }
     }
 }

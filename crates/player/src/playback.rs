@@ -7,6 +7,9 @@ pub use crate::config::{
 pub use crate::error::PlayerError;
 pub use crate::event::{PlayerEvent, PlayerEvents, TrackEndReason, TrackException};
 pub use crate::player::{Player, PlayerGuard, PlayerState, spawn_player};
+pub use crate::track::marker::{
+    MarkerId, MarkerState, TrackMarker, TrackMarkerHandler, TrackMarkerTracker,
+};
 #[cfg(test)]
 pub(crate) mod owner {
     pub(crate) use crate::player::PlayerOwner;
@@ -86,6 +89,10 @@ mod volume_tests;
 #[cfg(test)]
 #[path = "../tests/playback_scale.rs"]
 mod scale_tests;
+
+#[cfg(test)]
+#[path = "../tests/playback_markers.rs"]
+mod marker_tests;
 
 #[cfg(test)]
 #[path = "../tests/playback_support.rs"]

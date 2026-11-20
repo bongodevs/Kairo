@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, AtomicUsize,
 use thiserror::Error;
 use tokio::sync::Notify;
 
-use crate::audio::{FRAME_SAMPLES, MAX_PACKET_BYTES};
+use crate::audio::{CHANNELS, FRAME_SAMPLES, MAX_PACKET_BYTES};
 use crate::decode::{Millis, OpusBlock};
 use crate::effects::TapeOptions;
 use crate::opus::EncodedFrame;
@@ -38,22 +38,40 @@ pub const MAX_BUFFER_DURATION_MS: u64 = 5_000;
 pub const DEFAULT_BUFFER_DURATION_MS: u64 = 5_000;
 const FRAME_DURATION_MS: u64 = 20;
 
+/// Output encoding format delivered through the frame buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrameFormat {
+    /// 48 kHz stereo Opus frames (standard Discord voice delivery format).
+    #[default]
+    Opus,
+    /// 48 kHz stereo interleaved 16-bit signed integer PCM frames (3,840 bytes per 20 ms frame).
+    PcmS16Le,
+}
+
+pub const MAX_PCM_S16_BYTES: usize = FRAME_SAMPLES * CHANNELS * 2;
+pub const MAX_FRAME_PAYLOAD_BYTES: usize = MAX_PCM_S16_BYTES;
+
 /// Hard bounds and derived frame capacity for one player's handoff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameBufferConfig {
     duration_ms: u64,
     capacity: usize,
+    format: FrameFormat,
 }
 
 impl FrameBufferConfig {
     pub fn new(duration_ms: u64) -> Result<Self, BufferError> {
+        Self::with_format(duration_ms, FrameFormat::Opus)
+    }
+
+    pub fn with_format(duration_ms: u64, format: FrameFormat) -> Result<Self, BufferError> {
         if !(MIN_BUFFER_DURATION_MS..=MAX_BUFFER_DURATION_MS).contains(&duration_ms) {
             return Err(BufferError::InvalidDuration { duration_ms });
         }
         let frames = duration_ms / FRAME_DURATION_MS + 1;
         let capacity =
             usize::try_from(frames).map_err(|_| BufferError::InvalidDuration { duration_ms })?;
-        Ok(Self { duration_ms, capacity })
+        Ok(Self { duration_ms, capacity, format })
     }
 
     #[must_use]
@@ -67,22 +85,35 @@ impl FrameBufferConfig {
     }
 
     #[must_use]
+    pub const fn format(self) -> FrameFormat {
+        self.format
+    }
+
+    #[must_use]
     pub fn maximum_packet_bytes(self) -> usize {
-        self.capacity.saturating_mul(MAX_PACKET_BYTES)
+        let max_bytes = match self.format {
+            FrameFormat::Opus => MAX_PACKET_BYTES,
+            FrameFormat::PcmS16Le => MAX_PCM_S16_BYTES,
+        };
+        self.capacity.saturating_mul(max_bytes)
     }
 }
 
 impl Default for FrameBufferConfig {
     fn default() -> Self {
-        Self::new(DEFAULT_BUFFER_DURATION_MS)
-            .unwrap_or(Self { duration_ms: DEFAULT_BUFFER_DURATION_MS, capacity: 251 })
+        Self::new(DEFAULT_BUFFER_DURATION_MS).unwrap_or(Self {
+            duration_ms: DEFAULT_BUFFER_DURATION_MS,
+            capacity: 251,
+            format: FrameFormat::Opus,
+        })
     }
 }
 
 /// One owned packet copied into the bounded handoff.
 pub struct BufferedFrame {
-    packet: [u8; MAX_PACKET_BYTES],
+    packet: [u8; MAX_FRAME_PAYLOAD_BYTES],
     length: u16,
+    format: FrameFormat,
     position: Millis,
     next_position: Millis,
     pcm_frames: u16,
@@ -94,28 +125,75 @@ impl BufferedFrame {
         let duration = pcm_frames as u128 * 1_000 / u128::from(crate::audio::SAMPLE_RATE);
         let next_position =
             Millis::new(position.get().saturating_add(u64::try_from(duration).unwrap_or(u64::MAX)));
-        Self::with_volume(packet, position, next_position, pcm_frames, Volume::UNITY)
+        Self::with_format_and_volume(
+            packet,
+            FrameFormat::Opus,
+            position,
+            next_position,
+            pcm_frames,
+            Volume::UNITY,
+        )
     }
 
-    fn with_volume(
+    pub fn new_pcm_s16(
+        samples: &[i16],
+        position: Millis,
+        pcm_frames: usize,
+    ) -> Result<Self, BufferError> {
+        let byte_len = samples.len() * 2;
+        if byte_len > MAX_PCM_S16_BYTES {
+            return Err(BufferError::PacketTooLarge { length: byte_len });
+        }
+        if pcm_frames > FRAME_SAMPLES {
+            return Err(BufferError::InvalidPcmFrames { pcm_frames });
+        }
+        let duration = pcm_frames as u128 * 1_000 / u128::from(crate::audio::SAMPLE_RATE);
+        let next_position =
+            Millis::new(position.get().saturating_add(u64::try_from(duration).unwrap_or(u64::MAX)));
+        let mut storage = [0u8; MAX_FRAME_PAYLOAD_BYTES];
+        for (i, &sample) in samples.iter().enumerate() {
+            let bytes = sample.to_le_bytes();
+            storage[i * 2] = bytes[0];
+            storage[i * 2 + 1] = bytes[1];
+        }
+        Ok(Self {
+            packet: storage,
+            length: u16::try_from(byte_len)
+                .map_err(|_| BufferError::PacketTooLarge { length: byte_len })?,
+            format: FrameFormat::PcmS16Le,
+            position,
+            next_position,
+            pcm_frames: u16::try_from(pcm_frames)
+                .map_err(|_| BufferError::InvalidPcmFrames { pcm_frames })?,
+            volume: Volume::UNITY.level(),
+        })
+    }
+
+    fn with_format_and_volume(
         packet: &[u8],
+        format: FrameFormat,
         position: Millis,
         next_position: Millis,
         pcm_frames: usize,
         volume: Volume,
     ) -> Result<Self, BufferError> {
-        if packet.len() > MAX_PACKET_BYTES {
+        let max_len = match format {
+            FrameFormat::Opus => MAX_PACKET_BYTES,
+            FrameFormat::PcmS16Le => MAX_PCM_S16_BYTES,
+        };
+        if packet.len() > max_len {
             return Err(BufferError::PacketTooLarge { length: packet.len() });
         }
         if pcm_frames > FRAME_SAMPLES {
             return Err(BufferError::InvalidPcmFrames { pcm_frames });
         }
-        let mut storage = [0u8; MAX_PACKET_BYTES];
+        let mut storage = [0u8; MAX_FRAME_PAYLOAD_BYTES];
         storage[..packet.len()].copy_from_slice(packet);
         Ok(Self {
             packet: storage,
             length: u16::try_from(packet.len())
                 .map_err(|_| BufferError::PacketTooLarge { length: packet.len() })?,
+            format,
             position,
             next_position,
             pcm_frames: u16::try_from(pcm_frames)
@@ -125,8 +203,9 @@ impl BufferedFrame {
     }
 
     pub fn from_encoded(frame: &EncodedFrame<'_>) -> Result<Self, BufferError> {
-        Self::with_volume(
+        Self::with_format_and_volume(
             frame.packet,
+            FrameFormat::Opus,
             frame.position,
             frame.next_position,
             frame.pcm_frames,
@@ -135,13 +214,19 @@ impl BufferedFrame {
     }
 
     pub fn from_passthrough(frame: &OpusBlock<'_>) -> Result<Self, BufferError> {
-        Self::with_volume(
+        Self::with_format_and_volume(
             frame.packet,
+            FrameFormat::Opus,
             frame.position,
             Millis::new(frame.position.get().saturating_add(20)),
             frame.info.total_samples,
             Volume::UNITY,
         )
+    }
+
+    #[must_use]
+    pub const fn format(&self) -> FrameFormat {
+        self.format
     }
 
     #[must_use]
@@ -261,6 +346,7 @@ pub(super) struct State {
     pub(super) tape_duration_ms: AtomicU64,
     pub(super) tape_curve: AtomicU8,
     pub(super) tape_epoch: AtomicU64,
+    pub(super) markers: Arc<crate::track::marker::TrackMarkerTracker>,
     requested: AtomicBool,
 }
 
@@ -290,6 +376,7 @@ impl Default for State {
             tape_duration_ms: AtomicU64::new(0),
             tape_curve: AtomicU8::new(0),
             tape_epoch: AtomicU64::new(0),
+            markers: Arc::new(crate::track::marker::TrackMarkerTracker::new()),
             requested: AtomicBool::new(false),
         }
     }
@@ -416,6 +503,11 @@ impl FrameControl {
 
     pub(crate) async fn wait_for_stuck(&self, seen: u64) -> u64 {
         wait_for_change(&self.state.stuck_sequence, &self.state.stuck_notify, seen).await
+    }
+
+    #[must_use]
+    pub fn markers(&self) -> Arc<crate::track::marker::TrackMarkerTracker> {
+        Arc::clone(&self.state.markers)
     }
 
     fn reset_stuck_clock(&self) {

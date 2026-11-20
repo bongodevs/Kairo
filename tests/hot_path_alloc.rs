@@ -227,3 +227,29 @@ async fn test_voice_send_path_zero_allocations() {
     let count = ALLOCATIONS.load(Ordering::SeqCst);
     assert_eq!(count, 0, "Voice send path must perform 0 allocations in steady state, got {count}");
 }
+
+#[tokio::test]
+async fn test_consumer_read_path_zero_allocations() {
+    use player::buffer::{BufferedFrame, FrameBufferConfig, frame_buffer};
+
+    let (mut producer, mut consumer) = frame_buffer(FrameBufferConfig::default());
+    let mut output = [0u8; 1500];
+
+    // Pre-fill buffer
+    for _ in 0..200 {
+        let frame = BufferedFrame::new(&[0xf8, 0xff, 0xfe], Millis::default(), 960).expect("frame");
+        producer.send(frame).await.expect("send");
+    }
+
+    // Measure consumer read loop
+    ALLOCATIONS.store(0, Ordering::SeqCst);
+    TRACKING.store(true, Ordering::SeqCst);
+
+    for _ in 0..200 {
+        let _ = consumer.read(&mut output).expect("read");
+    }
+
+    TRACKING.store(false, Ordering::SeqCst);
+    let count = ALLOCATIONS.load(Ordering::SeqCst);
+    assert_eq!(count, 0, "Consumer read hot path must perform 0 allocations, got {count}");
+}

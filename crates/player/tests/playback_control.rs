@@ -29,6 +29,14 @@ async fn player(
     (player, frames, guard, SourceReference::new(path.to_string_lossy()))
 }
 
+async fn fixture(frames: u32) -> SourceReference {
+    let id = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+    let path =
+        std::env::temp_dir().join(format!("kairo-player-control-{}-{id}.wav", std::process::id()));
+    tokio::fs::write(&path, test_wav::pcm_wave(48_000, 2, frames)).await.expect("write fixture");
+    SourceReference::new(path.to_string_lossy())
+}
+
 async fn wait_until(mut condition: impl FnMut() -> bool) {
     for _ in 0..1_000 {
         if condition() {
@@ -238,4 +246,25 @@ async fn end_time_also_cuts_frames_that_were_already_buffered() {
 
     guard.shutdown().await.expect("shutdown");
     cleanup(&reference).await;
+}
+
+#[tokio::test]
+async fn track_replacement_keeps_old_audio_until_replacement_frame() {
+    let (player, mut frames, guard, first) = player(48_000 * 5, false).await;
+    let second = fixture(48_000 * 5).await;
+    player.play(first.clone(), false).await.expect("play first");
+    wait_until(|| frames.len() >= 5).await;
+
+    player.play(second.clone(), false).await.expect("replace with second");
+
+    let mut output = [0u8; MAX_PACKET_BYTES];
+    let BufferRead::Frame(old) = frames.read(&mut output).expect("shadow frame") else {
+        panic!("shadow buffer should provide old audio during replacement");
+    };
+    assert_eq!(old.position.get(), 0);
+
+    player.stop().await.expect("stop");
+    guard.shutdown().await.expect("shutdown");
+    cleanup(&first).await;
+    cleanup(&second).await;
 }

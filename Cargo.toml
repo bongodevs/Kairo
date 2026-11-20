@@ -45,7 +45,7 @@ semver = "1"
 sha2 = "0.10"
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 syom = { version = "=0.10.2", default-features = false }
-symphonia = { version = "=0.6.1", default-features = false, features = ["mkv", "ogg", "isomp4", "wav", "flac", "mpa", "vorbis", "aac", "pcm"] }
+symphonia = { version = "=0.6.1", default-features = false, features = ["all"] }
 thiserror = "2"
 wsola = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs"] }

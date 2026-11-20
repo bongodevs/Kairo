@@ -6,16 +6,23 @@ use tokio::sync::mpsc;
 
 use super::consumer::FrameConsumer;
 use super::{
-    BufferError, BufferedFrame, EndSend, FrameBufferConfig, FrameControl, FrameSend, NO_POSITION,
-    Queued, State, decrement,
+    BufferError, BufferedFrame, EndSend, FrameBufferConfig, FrameControl, FrameFormat, FrameSend,
+    NO_POSITION, Queued, State, decrement,
 };
 
 pub fn frame_buffer(config: FrameBufferConfig) -> (FrameProducer, FrameConsumer) {
     let (sender, receiver) = mpsc::channel(config.capacity());
     let state = Arc::new(State::default());
+    let format = config.format();
     (
-        FrameProducer { sender, state: state.clone(), generation: 0, clear_on_insert: false },
-        FrameConsumer::new(receiver, state),
+        FrameProducer {
+            sender,
+            state: state.clone(),
+            generation: 0,
+            clear_on_insert: false,
+            format,
+        },
+        FrameConsumer::new(receiver, state, format),
     )
 }
 
@@ -24,9 +31,14 @@ pub struct FrameProducer {
     state: Arc<State>,
     generation: u64,
     clear_on_insert: bool,
+    format: FrameFormat,
 }
 
 impl FrameProducer {
+    #[must_use]
+    pub const fn format(&self) -> FrameFormat {
+        self.format
+    }
     pub async fn send(&mut self, frame: BufferedFrame) -> Result<(), BufferError> {
         let (queued, activates, position) = self.queued(frame);
         let permit = self.sender.reserve().await.map_err(|_| BufferError::Closed)?;
@@ -124,6 +136,15 @@ impl FrameProducer {
 
     pub(crate) fn begin_track(&mut self) {
         self.clear_now();
+        self.state.received.store(false, Ordering::Release);
+        self.state.playing.store(true, Ordering::Release);
+        self.state.track_epoch.fetch_add(1, Ordering::AcqRel);
+        self.state.note_request();
+        self.awaiting_frame();
+    }
+
+    pub(crate) fn begin_replacement_track(&mut self) {
+        self.clear_on_insert();
         self.state.received.store(false, Ordering::Release);
         self.state.playing.store(true, Ordering::Release);
         self.state.track_epoch.fetch_add(1, Ordering::AcqRel);

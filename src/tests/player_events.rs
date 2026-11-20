@@ -128,7 +128,8 @@ fn exception_and_stuck_events_keep_the_v4_payloads() {
     assert_eq!(exception["exception"]["cause"], "bad packet");
     assert_eq!(exception["exception"]["causeStackTrace"], "trace");
 
-    let stuck = json(PlayerEvent::TrackStuck { track: track(), threshold_ms: 10_000 });
+    let stuck =
+        json(PlayerEvent::TrackStuck { track: track(), threshold_ms: 10_000, stack_trace: None });
     assert_eq!(stuck["type"], "TrackStuckEvent");
     assert_eq!(stuck["thresholdMs"], 10_000);
 }
@@ -150,7 +151,7 @@ fn lifecycle_logs_name_the_session_guild_and_track_but_not_the_payload() {
     log_event(
         "session",
         guild,
-        &PlayerEvent::TrackStuck { track: track.clone(), threshold_ms: 10_000 },
+        &PlayerEvent::TrackStuck { track: track.clone(), threshold_ms: 10_000, stack_trace: None },
     );
     log_event(
         "session",

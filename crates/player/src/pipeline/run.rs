@@ -26,6 +26,7 @@ pub(crate) fn run_worker(
         match signal.action() {
             WorkerAction::Pause => {
                 publish_promotions(&mut state, &signal);
+                state.interrupt_handle().reset();
                 return match failure {
                     Some(error) => WorkerEnd::Failed { state, error, end_queued: false },
                     None => WorkerEnd::Paused(state),
@@ -33,6 +34,7 @@ pub(crate) fn run_worker(
             }
             WorkerAction::Stop => {
                 publish_promotions(&mut state, &signal);
+                state.interrupt_handle().reset();
                 return match failure {
                     Some(error) => WorkerEnd::Failed { state, error, end_queued: false },
                     None => WorkerEnd::Stopped(state),
@@ -73,6 +75,7 @@ pub(crate) fn run_worker(
             publish_promotions(&mut state, &signal);
             match runtime.block_on(state.producer.send_end_or_wake(signal.wake())) {
                 Ok(EndSend::Sent) => {
+                    state.interrupt_handle().reset();
                     return match failure {
                         Some(error) => WorkerEnd::Failed { state, error, end_queued: true },
                         None => WorkerEnd::Finished(state),
@@ -80,6 +83,7 @@ pub(crate) fn run_worker(
                 }
                 Ok(EndSend::Woken) => continue,
                 Err(error) => {
+                    state.interrupt_handle().reset();
                     return WorkerEnd::Failed {
                         state,
                         error: failure.unwrap_or_else(|| error.into()),
@@ -97,7 +101,9 @@ pub(crate) fn run_worker(
         };
         publish_promotions(&mut state, &signal);
         state.producer.note_worker_progress();
-        if let Err(error) = produced {
+        if let Err(error) = produced
+            && signal.action() == WorkerAction::Run
+        {
             state.pending.clear();
             state.ending = true;
             failure = Some(error);
@@ -154,6 +160,7 @@ pub(crate) struct WorkerSignal {
     end_time: AtomicU64,
     buffer: FrameControl,
     promotion: Arc<PromotionSlot>,
+    interrupt: Arc<crate::decode::InterruptHandle>,
 }
 
 impl WorkerSignal {
@@ -161,6 +168,7 @@ impl WorkerSignal {
         end_time: Option<Millis>,
         buffer: FrameControl,
         promotion: Arc<PromotionSlot>,
+        interrupt: Arc<crate::decode::InterruptHandle>,
     ) -> Arc<Self> {
         buffer.set_end_time(end_time);
         Arc::new(Self {
@@ -169,16 +177,19 @@ impl WorkerSignal {
             end_time: AtomicU64::new(end_time.map_or(NO_END_TIME, Millis::get)),
             buffer,
             promotion,
+            interrupt,
         })
     }
 
     pub(crate) fn pause(&self) {
         self.command.store(PAUSE, Ordering::Release);
+        self.interrupt.interrupt();
         self.wake.notify_one();
     }
 
     pub(crate) fn stop(&self) {
         self.command.store(STOP, Ordering::Release);
+        self.interrupt.interrupt();
         self.wake.notify_one();
     }
 

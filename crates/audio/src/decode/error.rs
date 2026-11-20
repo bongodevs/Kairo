@@ -1,3 +1,4 @@
+use kairo_core::ExceptionSeverity;
 use thiserror::Error;
 
 /// Failure while probing, demuxing or decoding one media stream.
@@ -54,4 +55,24 @@ pub enum DecodeError {
 
     #[error("an always-decode request unexpectedly produced passthrough data")]
     UnexpectedPassthrough,
+}
+
+impl DecodeError {
+    #[must_use]
+    pub const fn severity(&self) -> ExceptionSeverity {
+        match self {
+            Self::NoAudioTrack
+            | Self::UnsupportedCodec { .. }
+            | Self::UnsupportedOpusChannels { .. } => ExceptionSeverity::Common,
+            Self::Probe { .. }
+            | Self::MissingCodecParameters
+            | Self::Demux { .. }
+            | Self::Decode { .. }
+            | Self::Aac { .. }
+            | Self::Seek { .. } => ExceptionSeverity::Suspicious,
+            Self::InvalidAudioFormat
+            | Self::OpusInitialize { .. }
+            | Self::UnexpectedPassthrough => ExceptionSeverity::Fault,
+        }
+    }
 }
