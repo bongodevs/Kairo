@@ -44,6 +44,20 @@ fn render_logo_line(line: &str, width: usize, color: bool) -> String {
     out
 }
 
+fn render_title(text: &str, color: bool) -> String {
+    if !color {
+        return text.to_string();
+    }
+    let span = (text.chars().count().max(2) - 1) as f32;
+    let mut out = String::from(BOLD);
+    for (i, ch) in text.chars().enumerate() {
+        out.push_str(&fg(gradient_at(i as f32 / span)));
+        out.push(ch);
+    }
+    out.push_str(RESET);
+    out
+}
+
 pub fn print(cfg: &LoggingConfig) {
     if !cfg.banner || cfg.format == LogFormat::Json {
         return;
@@ -74,10 +88,13 @@ pub fn print(cfg: &LoggingConfig) {
         ("Voice", env!("KAIRO_VOICE_VERSION").to_string()),
     ];
 
-    let info: Vec<String> = rows
-        .iter()
-        .map(|(label, value)| format!("{accent}▸{reset} {dim}{label:<11}{reset}{value}"))
-        .collect();
+    let mut info: Vec<String> = Vec::with_capacity(rows.len() + 2);
+    info.push(render_title("Kairo", cfg.color));
+    info.push(format!("{dim}{}{reset}", "─".repeat(38)));
+    info.extend(
+        rows.iter()
+            .map(|(label, value)| format!("{accent}▸{reset} {dim}{label:<11}{reset}{value}")),
+    );
 
     let total = logo_lines.len().max(info.len());
     let logo_off = (total - logo_lines.len()) / 2;
@@ -100,4 +117,29 @@ pub fn print(cfg: &LoggingConfig) {
     println!("{dim}{TAGLINE}{reset}");
     println!("{dim}{}{reset}", "─".repeat(line_len));
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_renders_with_and_without_color() {
+        let plain = render_title("Kairo", false);
+        assert_eq!(plain, "Kairo");
+
+        let colored = render_title("Kairo", true);
+        assert!(colored.contains('K'));
+        assert!(colored.contains(BOLD));
+        assert!(colored.contains(RESET));
+    }
+
+    #[test]
+    fn banner_prints_without_panic() {
+        let plain_cfg = LoggingConfig { banner: true, color: false, ..Default::default() };
+        print(&plain_cfg);
+
+        let color_cfg = LoggingConfig { banner: true, color: true, ..Default::default() };
+        print(&color_cfg);
+    }
 }
