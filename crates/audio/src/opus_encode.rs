@@ -200,6 +200,7 @@ impl OpusFrameEncoder {
         self.process_post_timescale(samples);
         pcm[sample_count..].fill(0.0);
         let volume = self.volume.apply_frame(pcm);
+        sanitize_pcm(pcm);
         let length = self
             .encoder
             .encode(pcm, FRAME_SAMPLES, &mut self.packet)
@@ -508,4 +509,12 @@ fn validate_block(block: &PcmBlock<'_>) -> Result<(), OpusError> {
         return Err(OpusError::InvalidBlock { expected, actual: block.samples.len() });
     }
     Ok(())
+}
+
+/// Final guard before Opus encoding: replaces non-finite samples with 0.0 and clamps to [-1.0, 1.0].
+#[inline]
+pub(crate) fn sanitize_pcm(samples: &mut [f32]) {
+    for sample in samples {
+        *sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
+    }
 }
