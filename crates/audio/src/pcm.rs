@@ -1,4 +1,7 @@
 #[cfg(test)]
+#[path = "../tests/resampler_fidelity.rs"]
+mod fidelity_tests;
+#[cfg(test)]
 #[path = "../tests/pcm_normalize.rs"]
 mod normalize_tests;
 #[cfg(test)]
@@ -68,9 +71,9 @@ pub enum ResamplingQuality {
     High,
 }
 
-/// Sinc window width for `MEDIUM` and `HIGH`, in taps.
+/// Sinc window widths; 256 keeps HIGH flat through 20 kHz on 44.1 -> 48 kHz conversion.
 const MEDIUM_TAPS: usize = 64;
-const HIGH_TAPS: usize = 128;
+const HIGH_TAPS: usize = 256;
 
 /// Table steps per input sample, setting the sub-sample resolution of the sinc kernel.
 const SINC_OVERSAMPLING: usize = 128;
