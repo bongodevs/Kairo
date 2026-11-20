@@ -14,11 +14,17 @@ const MAX_VIBRATO_HZ: f32 = 14.0;
 pub enum FilterError {
     #[error("filter volume must be finite and between zero and five")]
     InvalidFilterVolume,
+    #[error("equalizer gain must be finite")]
+    InvalidEqualizerGain,
+    #[error("karaoke parameters must be finite")]
+    InvalidKaraoke,
+    #[error("timescale speed, pitch, and rate must be finite and greater than zero")]
+    InvalidTimescale,
     #[error("echo length must be finite and at least one 48 kHz frame")]
     InvalidEchoLength,
     #[error("echo length exceeds the {max_seconds}-second memory bound")]
     EchoTooLong { max_seconds: f32 },
-    #[error("echo decay must be finite and greater than zero")]
+    #[error("echo decay must be finite and between zero and one")]
     InvalidEchoDecay,
     #[error("tremolo frequency must be finite and greater than zero")]
     InvalidTremoloFrequency,
@@ -28,6 +34,18 @@ pub enum FilterError {
     InvalidVibratoFrequency,
     #[error("vibrato depth must be finite and between zero and one")]
     InvalidVibratoDepth,
+    #[error("distortion parameters must be finite")]
+    InvalidDistortion,
+    #[error("rotation frequency must be finite")]
+    InvalidRotation,
+    #[error("channel mix parameters must be finite and between zero and one")]
+    InvalidChannelMix,
+    #[error("low pass smoothing must be finite and greater than 1.0")]
+    InvalidLowPass,
+    #[error("pass boost factor must be finite and greater than zero")]
+    InvalidPass,
+    #[error("normalization amplitude must be finite and between zero and one")]
+    InvalidNormalization,
     #[error("timescale requires a non-zero sample rate and channel count")]
     InvalidTimescaleFormat,
     #[error("timescale input contains {samples} samples, expected interleaved stereo")]
@@ -58,10 +76,42 @@ pub struct Filters {
 impl Filters {
     pub fn validate(self) -> Result<(), FilterError> {
         validate_volume(self.volume)?;
+        for gain in self.equalizer.gains() {
+            if !gain.is_finite() {
+                return Err(FilterError::InvalidEqualizerGain);
+            }
+        }
+        if let Some(config) = self.karaoke {
+            config.validate()?;
+        }
+        if let Some(config) = self.timescale {
+            config.validate()?;
+        }
         if let Some(config) = self.tremolo.filter(|config| config.is_enabled()) {
             config.validate()?;
         }
         if let Some(config) = self.vibrato.filter(|config| config.is_enabled()) {
+            config.validate()?;
+        }
+        if let Some(config) = self.distortion {
+            config.validate()?;
+        }
+        if let Some(config) = self.rotation {
+            config.validate()?;
+        }
+        if let Some(config) = self.channel_mix {
+            config.validate()?;
+        }
+        if let Some(config) = self.low_pass {
+            config.validate()?;
+        }
+        if let Some(config) = self.high_pass {
+            config.validate()?;
+        }
+        if let Some(config) = self.cutoff_low_pass {
+            config.validate()?;
+        }
+        if let Some(config) = self.normalization {
             config.validate()?;
         }
         if let Some(config) = self.echo.filter(|config| config.is_enabled()) {
@@ -121,7 +171,7 @@ impl EqualizerConfig {
 
     pub fn set_gain(&mut self, band: usize, gain: f32) {
         if let Some(current) = self.gains.get_mut(band) {
-            *current = gain.clamp(-0.25, 1.0);
+            *current = if gain.is_finite() { gain.clamp(-0.25, 1.0) } else { 0.0 };
         }
     }
 
@@ -160,6 +210,21 @@ impl ChannelMixConfig {
     pub fn is_enabled(self) -> bool {
         self != Self::default()
     }
+
+    pub fn validate(self) -> Result<(), FilterError> {
+        if !self.left_to_left.is_finite()
+            || !(0.0..=1.0).contains(&self.left_to_left)
+            || !self.left_to_right.is_finite()
+            || !(0.0..=1.0).contains(&self.left_to_right)
+            || !self.right_to_left.is_finite()
+            || !(0.0..=1.0).contains(&self.right_to_left)
+            || !self.right_to_right.is_finite()
+            || !(0.0..=1.0).contains(&self.right_to_right)
+        {
+            return Err(FilterError::InvalidChannelMix);
+        }
+        Ok(())
+    }
 }
 
 impl Default for ChannelMixConfig {
@@ -177,6 +242,13 @@ impl LowPassConfig {
     #[must_use]
     pub const fn is_enabled(self) -> bool {
         self.smoothing > 1.0
+    }
+
+    pub fn validate(self) -> Result<(), FilterError> {
+        if !self.smoothing.is_finite() || self.smoothing < 1.0 {
+            return Err(FilterError::InvalidLowPass);
+        }
+        Ok(())
     }
 }
 
@@ -197,6 +269,13 @@ impl PassConfig {
     pub const fn is_enabled(self) -> bool {
         self.cutoff_hz > 0
     }
+
+    pub fn validate(self) -> Result<(), FilterError> {
+        if !self.boost.is_finite() || self.boost <= 0.0 {
+            return Err(FilterError::InvalidPass);
+        }
+        Ok(())
+    }
 }
 
 impl Default for PassConfig {
@@ -216,6 +295,13 @@ impl NormalizationConfig {
     pub const fn is_enabled(self) -> bool {
         self.max_amplitude > 0.0
     }
+
+    pub fn validate(self) -> Result<(), FilterError> {
+        if !self.max_amplitude.is_finite() || !(0.0..=1.0).contains(&self.max_amplitude) {
+            return Err(FilterError::InvalidNormalization);
+        }
+        Ok(())
+    }
 }
 
 impl Default for NormalizationConfig {
@@ -233,6 +319,13 @@ impl RotationConfig {
     #[must_use]
     pub const fn is_enabled(self) -> bool {
         self.rotation_hz != 0.0
+    }
+
+    pub fn validate(self) -> Result<(), FilterError> {
+        if !self.rotation_hz.is_finite() {
+            return Err(FilterError::InvalidRotation);
+        }
+        Ok(())
     }
 }
 
@@ -252,6 +345,21 @@ impl DistortionConfig {
     #[must_use]
     pub fn is_enabled(self) -> bool {
         self != Self::default()
+    }
+
+    pub fn validate(self) -> Result<(), FilterError> {
+        if !self.sin_offset.is_finite()
+            || !self.sin_scale.is_finite()
+            || !self.cos_offset.is_finite()
+            || !self.cos_scale.is_finite()
+            || !self.tan_offset.is_finite()
+            || !self.tan_scale.is_finite()
+            || !self.offset.is_finite()
+            || !self.scale.is_finite()
+        {
+            return Err(FilterError::InvalidDistortion);
+        }
+        Ok(())
     }
 }
 
@@ -276,6 +384,19 @@ pub struct KaraokeConfig {
     pub mono_level: f32,
     pub filter_band: f32,
     pub filter_width: f32,
+}
+
+impl KaraokeConfig {
+    pub fn validate(self) -> Result<(), FilterError> {
+        if !self.level.is_finite()
+            || !self.mono_level.is_finite()
+            || !self.filter_band.is_finite()
+            || !self.filter_width.is_finite()
+        {
+            return Err(FilterError::InvalidKaraoke);
+        }
+        Ok(())
+    }
 }
 
 impl Default for KaraokeConfig {
@@ -303,7 +424,7 @@ impl EchoConfig {
         if self.length_seconds > MAX_ECHO_SECONDS {
             return Err(FilterError::EchoTooLong { max_seconds: MAX_ECHO_SECONDS });
         }
-        if !self.decay.is_finite() || self.decay <= 0.0 {
+        if !(0.0 < self.decay && self.decay < 1.0) {
             return Err(FilterError::InvalidEchoDecay);
         }
         Ok(())
@@ -379,6 +500,19 @@ impl TimescaleConfig {
     #[must_use]
     pub fn is_enabled(self) -> bool {
         self.speed != 1.0 || self.pitch != 1.0 || self.rate != 1.0
+    }
+
+    pub fn validate(self) -> Result<(), FilterError> {
+        if !self.speed.is_finite()
+            || self.speed <= 0.0
+            || !self.pitch.is_finite()
+            || self.pitch <= 0.0
+            || !self.rate.is_finite()
+            || self.rate <= 0.0
+        {
+            return Err(FilterError::InvalidTimescale);
+        }
+        Ok(())
     }
 
     /// Integer resampling step and WSOLA tempo for this request.

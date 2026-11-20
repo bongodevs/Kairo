@@ -15,6 +15,41 @@ fn echo_requires_a_usable_length_and_positive_decay() {
         Echo::new(EchoConfig { length_seconds: 0.1, decay: 0.0 }),
         Err(FilterError::InvalidEchoDecay)
     ));
+    assert!(matches!(
+        Echo::new(EchoConfig { length_seconds: f32::NAN, decay: 0.5 }),
+        Err(FilterError::InvalidEchoLength)
+    ));
+    assert!(matches!(
+        Echo::new(EchoConfig { length_seconds: -0.1, decay: 0.5 }),
+        Err(FilterError::InvalidEchoLength)
+    ));
+    assert!(matches!(
+        Echo::new(EchoConfig { length_seconds: f32::INFINITY, decay: 0.5 }),
+        Err(FilterError::InvalidEchoLength)
+    ));
+}
+
+#[test]
+fn echo_rejects_decay_at_or_above_one() {
+    // decay >= 1.0 creates an unstable IIR feedback pole (output explodes to infinity).
+    assert!(matches!(
+        Echo::new(EchoConfig { length_seconds: 0.1, decay: 1.0 }),
+        Err(FilterError::InvalidEchoDecay)
+    ));
+    assert!(matches!(
+        Echo::new(EchoConfig { length_seconds: 0.1, decay: 1.5 }),
+        Err(FilterError::InvalidEchoDecay)
+    ));
+    assert!(matches!(
+        Echo::new(EchoConfig { length_seconds: 0.1, decay: f32::NAN }),
+        Err(FilterError::InvalidEchoDecay)
+    ));
+    assert!(matches!(
+        Echo::new(EchoConfig { length_seconds: 0.1, decay: f32::INFINITY }),
+        Err(FilterError::InvalidEchoDecay)
+    ));
+    // The largest valid decay is strictly less than 1.0.
+    assert!(Echo::new(EchoConfig { length_seconds: 0.1, decay: 0.999 }).is_ok());
 }
 
 #[test]
