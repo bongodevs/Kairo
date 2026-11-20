@@ -231,56 +231,124 @@ fn mutation_test_track_codec_decoder_never_panics_or_hangs() {
     let track2 = track("http", SourceData::probe("ogg", None));
     let encoded2 = codec::encode(&track2.snapshot(Millis::default()), &codecs).expect("encode");
 
-    let valid_seeds = [encoded1.into_bytes(), encoded2.into_bytes(), b"QAAAAA==".to_vec()];
+    let raw1 = codec::decode_base64_for_test(&encoded1).expect("valid base64");
+    let raw2 = codec::decode_base64_for_test(&encoded2).expect("valid base64");
+    let raw_seeds = [raw1, raw2];
+    let string_seeds = [encoded1, encoded2, String::from("QAAAAA==")];
 
-    for iteration in 0..100_000 {
-        let base = &valid_seeds[rng.next_usize(valid_seeds.len())];
-        let mut mutated = base.clone();
+    let total = 50_000;
+    let mut first_step_rejected = 0;
+    let mut deep_path_reached = 0;
 
-        match rng.next() % 4 {
-            0 => {
-                // Flip random bytes
-                let count = 1 + rng.next_usize(4);
-                for _ in 0..count {
-                    if !mutated.is_empty() {
-                        let idx = rng.next_usize(mutated.len());
-                        mutated[idx] ^= (rng.next() & 0xFF) as u8;
+    for iteration in 0..total {
+        let (input_str, is_structure_aware) = if rng.next_usize(100) < 75 {
+            // Structure-aware binary mutation: mutate fields inside binary track, then validly base64 encode
+            let base = &raw_seeds[rng.next_usize(raw_seeds.len())];
+            let mut binary = base.clone();
+            match rng.next_usize(6) {
+                0 => {
+                    // Mutate header (bytes 0..4): length or versioned bit
+                    let offset = rng.next_usize(4);
+                    binary[offset] ^= (rng.next() & 0xFF) as u8;
+                }
+                1 => {
+                    // Mutate version byte (byte 4)
+                    if binary.len() > 4 {
+                        binary[4] = (rng.next() & 0x0F) as u8;
                     }
                 }
-            }
-            1 => {
-                // Truncate
-                let new_len = rng.next_usize(mutated.len() + 1);
-                mutated.truncate(new_len);
-            }
-            2 => {
-                // Extend
-                let extra = 1 + rng.next_usize(64);
-                for _ in 0..extra {
-                    mutated.push((rng.next() & 0xFF) as u8);
-                }
-            }
-            3 => {
-                // Splice
-                if !mutated.is_empty() {
-                    let start = rng.next_usize(mutated.len());
-                    let count = rng.next_usize(mutated.len() - start);
-                    for byte in mutated.iter_mut().skip(start).take(count) {
-                        *byte = (rng.next() & 0xFF) as u8;
+                2 => {
+                    // Mutate text length field or swap bytes in text region
+                    if binary.len() > 10 {
+                        let offset = 5 + rng.next_usize(binary.len() - 6);
+                        binary[offset] ^= (rng.next() & 0xFF) as u8;
                     }
                 }
+                3 => {
+                    // Swap sections
+                    if binary.len() > 16 {
+                        let a = 5 + rng.next_usize(binary.len() - 10);
+                        let b = 5 + rng.next_usize(binary.len() - 10);
+                        binary.swap(a, b);
+                    }
+                }
+                4 => {
+                    // Truncate binary within valid body
+                    let new_len = 5 + rng.next_usize(binary.len() - 4);
+                    binary.truncate(new_len);
+                }
+                5 => {
+                    // Append extra payload bytes
+                    let extra = 1 + rng.next_usize(32);
+                    for _ in 0..extra {
+                        binary.push((rng.next() & 0xFF) as u8);
+                    }
+                }
+                _ => unreachable!(),
             }
-            _ => unreachable!(),
-        }
+            (codec::encode_base64_for_test(&binary), true)
+        } else {
+            // String-level mutation: byte flip, truncate, extend, splice
+            let base = &string_seeds[rng.next_usize(string_seeds.len())];
+            let mut bytes = base.clone().into_bytes();
+            match rng.next_usize(4) {
+                0 => {
+                    let count = 1 + rng.next_usize(3);
+                    for _ in 0..count {
+                        if !bytes.is_empty() {
+                            let idx = rng.next_usize(bytes.len());
+                            bytes[idx] ^= (rng.next() & 0xFF) as u8;
+                        }
+                    }
+                }
+                1 => {
+                    let new_len = rng.next_usize(bytes.len() + 1);
+                    bytes.truncate(new_len);
+                }
+                2 => {
+                    let extra = 1 + rng.next_usize(16);
+                    for _ in 0..extra {
+                        bytes.push((rng.next() & 0xFF) as u8);
+                    }
+                }
+                3 => {
+                    if !bytes.is_empty() {
+                        let start = rng.next_usize(bytes.len());
+                        let count = rng.next_usize(bytes.len() - start);
+                        for byte in bytes.iter_mut().skip(start).take(count) {
+                            *byte = (rng.next() & 0xFF) as u8;
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+            (String::from_utf8_lossy(&bytes).into_owned(), false)
+        };
 
-        let input_str = String::from_utf8_lossy(&mutated);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = codec::decode(&input_str, &codecs);
+            codec::decode(&input_str, &codecs)
         }));
-        if result.is_err() {
-            panic!(
-                "codec::decode panicked at iteration {iteration} with seed {seed:#x}, input: {input_str}"
-            );
+
+        match result {
+            Ok(decode_result) => match decode_result {
+                Err(TrackCodecError::InvalidBase64) => {
+                    first_step_rejected += 1;
+                }
+                _ => {
+                    deep_path_reached += 1;
+                }
+            },
+            Err(_) => {
+                panic!(
+                    "codec::decode panicked at iteration {iteration} with seed {seed:#x}, structure_aware={is_structure_aware}, input: {input_str}"
+                );
+            }
         }
     }
+
+    let deep_pct = (deep_path_reached as f64 / total as f64) * 100.0;
+    println!(
+        "Track codec: total={total}, first_step_rejected={first_step_rejected}, deep_path_reached={deep_path_reached} ({deep_pct:.2}%)"
+    );
+    assert!(deep_pct > 20.0, "Expected > 20% deep path reach, got {deep_pct:.2}%");
 }

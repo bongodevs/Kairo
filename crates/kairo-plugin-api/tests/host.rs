@@ -341,64 +341,174 @@ fn mutation_test_plugin_boundary_parse_points_never_panic_or_hang() {
     let seed: u64 = 0xFEED_FACE_9876_5432;
     let mut rng = Rng(seed);
 
-    let manifest_seed = br#"{"name":"test","version":"1.0.0","sources":["test"]}"#.to_vec();
-    let load_result_seed = br#"{"type":"empty"}"#.to_vec();
-    let open_seed = br#"{"type":"url","url":"https://example.com/audio.mp3"}"#.to_vec();
-    let seeds = [manifest_seed, load_result_seed, open_seed];
+    let manifest_val = json!({
+        "name": "test-plugin",
+        "version": "1.0.0",
+        "sources": [{"name": "test", "search": false}]
+    });
+    let load_result_val = json!({
+        "type": "track",
+        "track": {
+            "info": {
+                "identifier": "id-123",
+                "title": "Title",
+                "author": "Author",
+                "source_name": "test",
+                "length": 180000,
+                "is_stream": false,
+                "is_seekable": true
+            }
+        }
+    });
+    let open_val = json!({
+        "type": "url",
+        "url": "https://example.com/audio.mp3"
+    });
 
-    for iteration in 0..100_000 {
-        let base = &seeds[rng.next_usize(seeds.len())];
-        let mut mutated = base.clone();
+    let raw_seeds = [
+        br#"{"name":"test","version":"1.0.0","sources":["test"]}"#.to_vec(),
+        br#"{"type":"empty"}"#.to_vec(),
+        br#"{"type":"url","url":"https://example.com/audio.mp3"}"#.to_vec(),
+    ];
 
-        match rng.next() % 4 {
-            0 => {
-                let count = 1 + rng.next_usize(4);
-                for _ in 0..count {
-                    if !mutated.is_empty() {
-                        let idx = rng.next_usize(mutated.len());
-                        mutated[idx] ^= (rng.next() & 0xFF) as u8;
+    let total = 100_000;
+    let mut first_step_rejected = 0;
+    let mut deep_path_reached = 0;
+
+    for iteration in 0..total {
+        let (input_str, target_type) = if rng.next_usize(100) < 75 {
+            // Structure-aware JSON mutation: mutate values, types, keys inside valid JSON AST
+            let (mut val, target) = match rng.next_usize(3) {
+                0 => (manifest_val.clone(), 0),
+                1 => (load_result_val.clone(), 1),
+                _ => (open_val.clone(), 2),
+            };
+
+            if let Some(map) = val.as_object_mut() {
+                match rng.next_usize(5) {
+                    0 => {
+                        // Insert unexpected field
+                        map.insert(String::from("unknown_key"), json!(rng.next()));
                     }
+                    1 => {
+                        // Change a field type
+                        if let Some((_, v)) = map.iter_mut().next() {
+                            *v = json!(rng.next_usize(1000));
+                        }
+                    }
+                    2 => {
+                        // Remove a key
+                        let keys: Vec<_> = map.keys().cloned().collect();
+                        if !keys.is_empty() {
+                            let k = &keys[rng.next_usize(keys.len())];
+                            map.remove(k);
+                        }
+                    }
+                    3 => {
+                        // Mutate enum type tag
+                        if map.contains_key("type") {
+                            let variants =
+                                ["track", "playlist", "search", "empty", "error", "invalid"];
+                            map.insert(
+                                String::from("type"),
+                                json!(variants[rng.next_usize(variants.len())]),
+                            );
+                        }
+                    }
+                    4 => {
+                        // Inject null
+                        if let Some((_, v)) = map.iter_mut().next() {
+                            *v = Value::Null;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            (serde_json::to_string(&val).unwrap_or_else(|_| "{}".into()), target)
+        } else {
+            // Raw byte mutation: flip, truncate, extend, splice
+            let base = &raw_seeds[rng.next_usize(raw_seeds.len())];
+            let mut mutated = base.clone();
+            match rng.next_usize(4) {
+                0 => {
+                    let count = 1 + rng.next_usize(4);
+                    for _ in 0..count {
+                        if !mutated.is_empty() {
+                            let idx = rng.next_usize(mutated.len());
+                            mutated[idx] ^= (rng.next() & 0xFF) as u8;
+                        }
+                    }
+                }
+                1 => {
+                    let new_len = rng.next_usize(mutated.len() + 1);
+                    mutated.truncate(new_len);
+                }
+                2 => {
+                    let extra = 1 + rng.next_usize(32);
+                    for _ in 0..extra {
+                        mutated.push((rng.next() & 0xFF) as u8);
+                    }
+                }
+                3 => {
+                    if !mutated.is_empty() {
+                        let start = rng.next_usize(mutated.len());
+                        let count = rng.next_usize(mutated.len() - start);
+                        for byte in mutated.iter_mut().skip(start).take(count) {
+                            *byte = (rng.next() & 0xFF) as u8;
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+            (String::from_utf8_lossy(&mutated).into_owned(), rng.next_usize(3))
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match target_type {
+            0 => {
+                let res: Result<Manifest, _> = decode_json("manifest", &input_str);
+                match res {
+                    Ok(_) => true,
+                    Err(HostError::ResponseJson { source, .. }) => source.is_data(),
+                    _ => false,
                 }
             }
             1 => {
-                let new_len = rng.next_usize(mutated.len() + 1);
-                mutated.truncate(new_len);
-            }
-            2 => {
-                let extra = 1 + rng.next_usize(64);
-                for _ in 0..extra {
-                    mutated.push((rng.next() & 0xFF) as u8);
+                let res: Result<LoadResult, _> = decode_json("load", &input_str);
+                match res {
+                    Ok(_) => true,
+                    Err(HostError::ResponseJson { source, .. }) => source.is_data(),
+                    _ => false,
                 }
             }
-            3 => {
-                if !mutated.is_empty() {
-                    let start = rng.next_usize(mutated.len());
-                    let count = rng.next_usize(mutated.len() - start);
-                    for byte in mutated.iter_mut().skip(start).take(count) {
-                        *byte = (rng.next() & 0xFF) as u8;
-                    }
+            _ => {
+                let res: Result<Open, _> = decode_json("open", &input_str);
+                match res {
+                    Ok(_) => true,
+                    Err(HostError::ResponseJson { source, .. }) => source.is_data(),
+                    _ => false,
                 }
             }
-            _ => unreachable!(),
-        }
+        }));
 
-        let input_str = String::from_utf8_lossy(&mutated);
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match iteration % 3 {
-                0 => {
-                    let _ = decode_json::<Manifest>("manifest", &input_str);
+        match result {
+            Ok(reached_deep) => {
+                if reached_deep {
+                    deep_path_reached += 1;
+                } else {
+                    first_step_rejected += 1;
                 }
-                1 => {
-                    let _ = decode_json::<LoadResult>("load", &input_str);
-                }
-                _ => {
-                    let _ = decode_json::<Open>("open", &input_str);
-                }
-            }));
-        if result.is_err() {
-            panic!(
-                "decode_json panicked at iteration {iteration} with seed {seed:#x}, input: {input_str}"
-            );
+            }
+            Err(_) => {
+                panic!(
+                    "decode_json panicked at iteration {iteration} with seed {seed:#x}, input: {input_str}"
+                );
+            }
         }
     }
+
+    let deep_pct = (deep_path_reached as f64 / total as f64) * 100.0;
+    println!(
+        "Plugin JSON: total={total}, first_step_rejected={first_step_rejected}, deep_path_reached={deep_path_reached} ({deep_pct:.2}%)"
+    );
+    assert!(deep_pct > 20.0, "Expected > 20% deep path reach, got {deep_pct:.2}%");
 }

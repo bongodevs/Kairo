@@ -77,7 +77,7 @@ impl super::DaveHandler {
     }
 
     fn handle_binary(&mut self, op: u8, body: &[u8]) -> Vec<DaveOut> {
-        match op {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match op {
             OP_MLS_EXTERNAL_SENDER => {
                 if let Some(session) = self.session.as_mut()
                     && let Err(err) = session.set_external_sender(body)
@@ -90,6 +90,13 @@ impl super::DaveHandler {
             OP_MLS_ANNOUNCE_COMMIT_TRANSITION => self.process_commit(body),
             OP_MLS_WELCOME => self.process_welcome(body),
             _ => Vec::new(),
+        }));
+        match result {
+            Ok(outs) => outs,
+            Err(_) => {
+                tracing::warn!("DAVE binary frame parsing panicked (op={op})");
+                Vec::new()
+            }
         }
     }
 }

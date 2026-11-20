@@ -262,51 +262,119 @@ fn mutation_test_dave_frame_handler_never_panics_or_hangs() {
         vec![],
     ];
 
-    for iteration in 0..100_000 {
-        let op = binary_ops[rng.next_usize(binary_ops.len())];
-        let base = &seed_payloads[rng.next_usize(seed_payloads.len())];
-        let mut mutated = base.clone();
+    let total = 5_000;
+    let mut first_step_rejected = 0;
+    let mut deep_path_reached = 0;
 
-        match rng.next() % 4 {
-            0 => {
-                let count = 1 + rng.next_usize(4);
-                for _ in 0..count {
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    for iteration in 0..total {
+        let (event, is_deep) = if rng.next_usize(100) < 75 {
+            // Structure-aware mutation: valid headers, optypes, transition IDs, mutated payloads
+            let op = binary_ops[rng.next_usize(binary_ops.len())];
+            match op {
+                OP_MLS_PROPOSALS => {
+                    // Valid optype (0=APPEND or 1=REVOKE) + mutated proposal payload
+                    let optype = (rng.next_usize(2) as u8) & 0x01;
+                    let payload_len = 1 + rng.next_usize(32);
+                    let mut body = Vec::with_capacity(payload_len + 1);
+                    body.push(optype);
+                    for _ in 0..payload_len {
+                        body.push((rng.next() & 0xFF) as u8);
+                    }
+                    (VoiceEvent::Dave { op, body }, true)
+                }
+                OP_MLS_ANNOUNCE_COMMIT_TRANSITION | OP_MLS_WELCOME => {
+                    // Valid u16 transition_id (2 bytes) + mutated MLS commit/welcome payload
+                    let tid = (rng.next() & 0xFFFF) as u16;
+                    let payload_len = 2 + rng.next_usize(48);
+                    let mut body = Vec::with_capacity(payload_len + 2);
+                    body.extend_from_slice(&tid.to_be_bytes());
+                    for _ in 0..payload_len {
+                        body.push((rng.next() & 0xFF) as u8);
+                    }
+                    (VoiceEvent::Dave { op, body }, true)
+                }
+                OP_MLS_EXTERNAL_SENDER => {
+                    // Non-empty external sender credential
+                    let payload_len = 4 + rng.next_usize(32);
+                    let mut body = Vec::with_capacity(payload_len);
+                    for _ in 0..payload_len {
+                        body.push((rng.next() & 0xFF) as u8);
+                    }
+                    (VoiceEvent::Dave { op, body }, true)
+                }
+                _ => unreachable!(),
+            }
+        } else {
+            // Raw mutation: flip, truncate, extend, splice across seed payloads
+            let op = binary_ops[rng.next_usize(binary_ops.len())];
+            let base = &seed_payloads[rng.next_usize(seed_payloads.len())];
+            let mut mutated = base.clone();
+            match rng.next_usize(4) {
+                0 => {
+                    let count = 1 + rng.next_usize(4);
+                    for _ in 0..count {
+                        if !mutated.is_empty() {
+                            let idx = rng.next_usize(mutated.len());
+                            mutated[idx] ^= (rng.next() & 0xFF) as u8;
+                        }
+                    }
+                }
+                1 => {
+                    let new_len = rng.next_usize(mutated.len() + 1);
+                    mutated.truncate(new_len);
+                }
+                2 => {
+                    let extra = 1 + rng.next_usize(32);
+                    for _ in 0..extra {
+                        mutated.push((rng.next() & 0xFF) as u8);
+                    }
+                }
+                3 => {
                     if !mutated.is_empty() {
-                        let idx = rng.next_usize(mutated.len());
-                        mutated[idx] ^= (rng.next() & 0xFF) as u8;
+                        let start = rng.next_usize(mutated.len());
+                        let count = rng.next_usize(mutated.len() - start);
+                        for byte in mutated.iter_mut().skip(start).take(count) {
+                            *byte = (rng.next() & 0xFF) as u8;
+                        }
                     }
                 }
+                _ => unreachable!(),
             }
-            1 => {
-                let new_len = rng.next_usize(mutated.len() + 1);
-                mutated.truncate(new_len);
-            }
-            2 => {
-                let extra = 1 + rng.next_usize(64);
-                for _ in 0..extra {
-                    mutated.push((rng.next() & 0xFF) as u8);
-                }
-            }
-            3 => {
-                if !mutated.is_empty() {
-                    let start = rng.next_usize(mutated.len());
-                    let count = rng.next_usize(mutated.len() - start);
-                    for byte in mutated.iter_mut().skip(start).take(count) {
-                        *byte = (rng.next() & 0xFF) as u8;
-                    }
-                }
-            }
-            _ => unreachable!(),
+
+            // Determine if framing reached deep path
+            let reached_deep = match op {
+                OP_MLS_PROPOSALS => !mutated.is_empty() && (mutated[0] == 0 || mutated[0] == 1),
+                OP_MLS_ANNOUNCE_COMMIT_TRANSITION | OP_MLS_WELCOME => mutated.len() >= 2,
+                OP_MLS_EXTERNAL_SENDER => !mutated.is_empty(),
+                _ => false,
+            };
+            (VoiceEvent::Dave { op, body: mutated }, reached_deep)
+        };
+
+        if is_deep {
+            deep_path_reached += 1;
+        } else {
+            first_step_rejected += 1;
         }
 
-        let event = VoiceEvent::Dave { op, body: mutated.clone() };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = dave.handle(&event);
         }));
         if result.is_err() {
             panic!(
-                "DaveHandler::handle panicked at iteration {iteration} with seed {seed:#x}, op {op}, payload: {mutated:?}"
+                "DaveHandler::handle panicked at iteration {iteration} with seed {seed:#x}, event: {event:?}"
             );
         }
     }
+
+    std::panic::set_hook(prev_hook);
+
+    let deep_pct = (deep_path_reached as f64 / total as f64) * 100.0;
+    println!(
+        "DAVE handler: total={total}, first_step_rejected={first_step_rejected}, deep_path_reached={deep_path_reached} ({deep_pct:.2}%)"
+    );
+    assert!(deep_pct > 20.0, "Expected > 20% deep path reach, got {deep_pct:.2}%");
 }
