@@ -241,6 +241,14 @@ impl OpusEncoderConfig {
         }
         Ok(self)
     }
+
+    pub(crate) fn apply_to(self, encoder: &mut opus_rs::OpusEncoder) {
+        encoder.bitrate_bps = self.bitrate_bps;
+        encoder.complexity = self.complexity;
+        encoder.use_cbr = self.use_cbr;
+        encoder.use_inband_fec = self.use_inband_fec;
+        encoder.packet_loss_perc = self.packet_loss_percent;
+    }
 }
 
 /// One borrowed Opus packet. The next encode call reuses its storage.

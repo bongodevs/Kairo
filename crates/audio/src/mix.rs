@@ -12,6 +12,7 @@ use opus_rs::{Application, OpusDecoder, OpusEncoder};
 
 use kairo_core::Millis;
 
+use crate::opus::OpusEncoderConfig;
 use crate::{CHANNELS, FRAME_SAMPLES, MAX_PACKET_BYTES, SAMPLE_RATE};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrossfadeCurve {
@@ -395,9 +396,6 @@ impl VolumeRamp {
     }
 }
 
-const TAPE_BITRATE_BPS: i32 = 99_000;
-const TAPE_COMPLEXITY: i32 = 10;
-
 /// Consumer-side tape-machine ramp for one player.
 pub struct TapeRuntime {
     effect: TapeEffect,
@@ -413,8 +411,7 @@ pub struct TapeRuntime {
 impl TapeRuntime {
     pub fn new(options: TapeOptions, position: Millis) -> Result<Self, &'static str> {
         let mut encoder = OpusEncoder::new(SAMPLE_RATE as i32, CHANNELS, Application::Audio)?;
-        encoder.bitrate_bps = TAPE_BITRATE_BPS;
-        encoder.complexity = TAPE_COMPLEXITY;
+        OpusEncoderConfig::default().apply_to(&mut encoder);
         Ok(Self {
             effect: TapeEffect::new(options),
             decoder: OpusDecoder::new(SAMPLE_RATE as i32, CHANNELS)?,

@@ -68,6 +68,10 @@ fn opus_and_resampling_settings_reach_the_engine_config() {
     assert_eq!(player.opus.complexity, 3);
     assert_eq!(player.resampling_quality, player::pcm::ResamplingQuality::High);
 
+    config.lavalink.server.opus_encoding_quality = Some(10);
+    let player = player_config(&config).expect("player config");
+    assert_eq!(player.opus.complexity, 10, "top quality must reach encoder complexity 10");
+
     config.lavalink.server.opus_encoding_quality = Some(99);
     let player = player_config(&config).expect("player config");
     assert_eq!(player.opus.complexity, 10, "out-of-range quality falls back to the maximum");

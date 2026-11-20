@@ -380,13 +380,10 @@ pub struct OpusFrameEncoder {
 impl OpusFrameEncoder {
     pub fn new(config: OpusEncoderConfig) -> Result<Self, OpusError> {
         let config = config.validate()?;
+        // Audio at 48 kHz starts fullband, and opus-rs leaves its internal DTX switch off.
         let mut encoder = CodecEncoder::new(SAMPLE_RATE as i32, CHANNELS, Application::Audio)
             .map_err(|message| OpusError::Initialize { message })?;
-        encoder.bitrate_bps = config.bitrate_bps;
-        encoder.complexity = config.complexity;
-        encoder.use_cbr = config.use_cbr;
-        encoder.use_inband_fec = config.use_inband_fec;
-        encoder.packet_loss_perc = config.packet_loss_percent;
+        config.apply_to(&mut encoder);
 
         Ok(Self {
             encoder,

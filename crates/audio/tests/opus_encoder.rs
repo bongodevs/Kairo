@@ -303,6 +303,40 @@ fn unity_processing_keeps_every_finite_sample_bit_at_the_encoder() {
 }
 
 #[test]
+fn music_profile_applies_every_exposed_encoder_control() {
+    let encoder = OpusFrameEncoder::new(OpusEncoderConfig::default()).expect("encoder");
+    assert_eq!(encoder.encoder.bitrate_bps, 99_000);
+    assert_eq!(encoder.encoder.complexity, 10);
+    assert!(!encoder.encoder.use_cbr, "music encoding must use VBR");
+    assert!(!encoder.encoder.use_inband_fec);
+    assert_eq!(encoder.encoder.packet_loss_perc, 0);
+}
+
+#[test]
+fn music_profile_emits_fullband_stereo_and_keeps_dtx_off() {
+    let mut encoder = OpusFrameEncoder::new(OpusEncoderConfig::default()).expect("encoder");
+    let silence = vec![0.0; FRAME_SAMPLES * CHANNELS];
+    for frame in 0..100 {
+        encoder
+            .process(
+                PcmBlock {
+                    samples: &silence,
+                    format: OUTPUT_FORMAT,
+                    frames: FRAME_SAMPLES,
+                    position: Millis::new(frame * 20),
+                },
+                |encoded| {
+                    assert!(encoded.packet.len() > 1, "DTX packet at frame {frame}");
+                    assert_ne!(encoded.packet[0] & 0x04, 0, "packet must signal stereo");
+                    let config = encoded.packet[0] >> 3;
+                    assert!(matches!(config, 14 | 15 | 28..=31), "config {config} is not fullband");
+                },
+            )
+            .expect("encode silence");
+    }
+}
+
+#[test]
 fn encoder_safely_encodes_nan_and_infinite_samples_without_panic() {
     let mut encoder = OpusFrameEncoder::new(OpusEncoderConfig::default()).expect("encoder");
     let mut bad_samples = vec![f32::NAN; FRAME_SAMPLES * CHANNELS];
