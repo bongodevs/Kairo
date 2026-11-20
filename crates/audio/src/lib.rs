@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod clock;
+mod limit;
 mod opus_encode;
 
 pub mod decode;

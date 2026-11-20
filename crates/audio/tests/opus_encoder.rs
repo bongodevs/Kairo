@@ -265,22 +265,8 @@ fn invalid_settings_and_pcm_are_typed_errors() {
 }
 
 #[test]
-fn pcm_guard_replaces_non_finite_samples_and_preserves_finite_bits() {
-    let mut samples = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2.5, -3.0, 0.5, -0.75, 0.0];
-    sanitize_pcm(&mut samples);
-    assert_eq!(samples[0], 0.0, "NaN should be replaced with 0.0");
-    assert_eq!(samples[1], 0.0, "Infinity should be replaced with 0.0");
-    assert_eq!(samples[2], 0.0, "-Infinity should be replaced with 0.0");
-    assert_eq!(samples[3].to_bits(), 2.5f32.to_bits());
-    assert_eq!(samples[4].to_bits(), (-3.0f32).to_bits());
-    assert_eq!(samples[5], 0.5, "0.5 should be preserved");
-    assert_eq!(samples[6], -0.75, "-0.75 should be preserved");
-    assert_eq!(samples[7], 0.0, "0.0 should be preserved");
-}
-
-#[test]
-fn unity_processing_keeps_every_finite_sample_bit_at_the_encoder() {
-    let pattern = [-1.25, -1.0, -0.0, f32::MIN_POSITIVE, 0.25, 1.0, 1.125, 0.0];
+fn unity_processing_keeps_every_subthreshold_sample_bit_at_the_encoder() {
+    let pattern = [-0.94, -0.75, -0.0, f32::MIN_POSITIVE, 0.25, 0.75, 0.94, 0.0];
     let samples = pattern.into_iter().cycle().take(FRAME_SAMPLES * CHANNELS).collect::<Vec<_>>();
     let expected = samples.iter().map(|sample| sample.to_bits()).collect::<Vec<_>>();
     let mut encoder = OpusFrameEncoder::new(OpusEncoderConfig::default()).expect("encoder");
@@ -372,32 +358,4 @@ fn encoder_safely_encodes_nan_and_infinite_samples_without_panic() {
         assert!(sample.is_finite(), "decoded sample must be finite: {sample}");
         assert!(*sample >= -1.05 && *sample <= 1.05, "decoded sample out of bounds: {sample}");
     }
-}
-
-#[test]
-fn measure_pcm_guard_cost_per_frame() {
-    let mut frame = [0.25_f32; FRAME_SAMPLES * CHANNELS];
-    frame[10] = f32::NAN;
-    frame[20] = 5.0;
-    frame[30] = f32::INFINITY;
-
-    // Warm up
-    for _ in 0..1_000 {
-        sanitize_pcm(&mut frame);
-    }
-
-    let iterations = 100_000;
-    let start = std::time::Instant::now();
-    for _ in 0..iterations {
-        sanitize_pcm(&mut frame);
-        std::hint::black_box(&frame);
-    }
-    let elapsed = start.elapsed();
-    let nanos_per_frame = elapsed.as_nanos() as f64 / iterations as f64;
-    println!(
-        "\n  [SANITY GUARD BENCHMARK] {nanos_per_frame:.2} ns per 20ms frame ({:.4} µs)\n",
-        nanos_per_frame / 1000.0
-    );
-    // Sanity guard must easily take less than 10 microseconds (< 0.05% of 20ms frame budget)
-    assert!(nanos_per_frame < 10_000.0, "sanitize_pcm too slow: {nanos_per_frame} ns");
 }

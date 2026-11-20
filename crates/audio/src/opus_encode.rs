@@ -22,6 +22,7 @@ use crate::filters::{
     HighPass, Karaoke, LowPass, Normalization, Rotation, Timescale, TimescaleConfig, Tremolo,
     Vibrato,
 };
+use crate::limit::Limiter;
 use crate::mix::{Volume, VolumeRamp};
 use crate::opus::{
     CHANNELS, EncodedFrame, FRAME_SAMPLES, MAX_PACKET_BYTES, OpusEncoderConfig, OpusError,
@@ -147,6 +148,7 @@ impl OpusFrameEncoder {
     }
 
     pub(super) fn reset_processing(&mut self) {
+        self.limiter.reset();
         self.equalizer.reset();
         if let Some(output) = self.timescale.as_mut() {
             output.filter.reset();
@@ -196,11 +198,10 @@ impl OpusFrameEncoder {
         F: for<'a> FnMut(EncodedFrame<'a>),
     {
         let sample_count = pcm_frames * CHANNELS;
-        let samples = &mut pcm[..sample_count];
-        self.process_post_timescale(samples);
+        self.process_post_timescale(&mut pcm[..sample_count]);
         pcm[sample_count..].fill(0.0);
         let volume = self.volume.apply_frame(pcm);
-        sanitize_pcm(pcm);
+        self.limiter.process(&mut pcm[..sample_count]);
         let length = self
             .encoder
             .encode(pcm, FRAME_SAMPLES, &mut self.packet)
@@ -360,6 +361,7 @@ pub struct OpusFrameEncoder {
     finished: bool,
     stats: OpusStats,
     volume: VolumeRamp,
+    limiter: Limiter,
     filter_volume: Option<FilterVolume>,
     equalizer: Equalizer,
     karaoke: Option<Karaoke>,
@@ -396,6 +398,7 @@ impl OpusFrameEncoder {
             finished: false,
             stats: OpusStats::default(),
             volume: VolumeRamp::new(Volume::default()),
+            limiter: Limiter::new(),
             filter_volume: None,
             equalizer: Equalizer::new(EqualizerConfig::default()),
             karaoke: None,
@@ -506,14 +509,4 @@ fn validate_block(block: &PcmBlock<'_>) -> Result<(), OpusError> {
         return Err(OpusError::InvalidBlock { expected, actual: block.samples.len() });
     }
     Ok(())
-}
-
-/// Replace non-finite samples without changing finite PCM on the unity path.
-#[inline]
-pub(crate) fn sanitize_pcm(samples: &mut [f32]) {
-    for sample in samples {
-        if !sample.is_finite() {
-            *sample = 0.0;
-        }
-    }
 }
