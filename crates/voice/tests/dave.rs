@@ -223,3 +223,90 @@ fn split_u16_needs_a_two_byte_header() {
     assert!(split_u16(&[0x01]).is_none());
     assert_eq!(split_u16(&[0x12, 0x34, 0xAA]), Some((0x1234, &[0xAA][..])));
 }
+
+#[test]
+fn mutation_test_dave_frame_handler_never_panics_or_hangs() {
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0
+        }
+        fn next_usize(&mut self, max: usize) -> usize {
+            if max == 0 { 0 } else { (self.next() as usize) % max }
+        }
+    }
+
+    let seed: u64 = 0xDAFE_1234_5678_9ABC;
+    let mut rng = Rng(seed);
+
+    let mut dave = DaveHandler::new(1, 2);
+    // Initialize session with session description
+    dave.handle(&json_event(
+        OP_SESSION_DESCRIPTION,
+        json!({ "mode": "aead_aes256_gcm_rtpsize", "dave_protocol_version": 1 }),
+    ));
+
+    let binary_ops = [
+        OP_MLS_EXTERNAL_SENDER,
+        OP_MLS_PROPOSALS,
+        OP_MLS_WELCOME,
+        OP_MLS_ANNOUNCE_COMMIT_TRANSITION,
+    ];
+
+    let seed_payloads = [
+        vec![0x00, 0x01, 0xAA, 0xBB],
+        vec![0x00, 0x00],
+        vec![0x12, 0x34, 0x56, 0x78, 0x9A],
+        vec![0xFF, 0xFF, 0x00],
+        vec![],
+    ];
+
+    for iteration in 0..100_000 {
+        let op = binary_ops[rng.next_usize(binary_ops.len())];
+        let base = &seed_payloads[rng.next_usize(seed_payloads.len())];
+        let mut mutated = base.clone();
+
+        match rng.next() % 4 {
+            0 => {
+                let count = 1 + rng.next_usize(4);
+                for _ in 0..count {
+                    if !mutated.is_empty() {
+                        let idx = rng.next_usize(mutated.len());
+                        mutated[idx] ^= (rng.next() & 0xFF) as u8;
+                    }
+                }
+            }
+            1 => {
+                let new_len = rng.next_usize(mutated.len() + 1);
+                mutated.truncate(new_len);
+            }
+            2 => {
+                let extra = 1 + rng.next_usize(64);
+                for _ in 0..extra {
+                    mutated.push((rng.next() & 0xFF) as u8);
+                }
+            }
+            3 => {
+                if !mutated.is_empty() {
+                    let start = rng.next_usize(mutated.len());
+                    let count = rng.next_usize(mutated.len() - start);
+                    for byte in mutated.iter_mut().skip(start).take(count) {
+                        *byte = (rng.next() & 0xFF) as u8;
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        let event = VoiceEvent::Dave { op, body: mutated.clone() };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = dave.handle(&event);
+        }));
+        if result.is_err() {
+            panic!(
+                "DaveHandler::handle panicked at iteration {iteration} with seed {seed:#x}, op {op}, payload: {mutated:?}"
+            );
+        }
+    }
+}

@@ -207,3 +207,80 @@ fn oversized_modified_utf_field_is_rejected() {
         Err(TrackCodecError::FieldTooLong)
     ));
 }
+
+#[test]
+fn mutation_test_track_codec_decoder_never_panics_or_hangs() {
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0
+        }
+        fn next_usize(&mut self, max: usize) -> usize {
+            if max == 0 { 0 } else { (self.next() as usize) % max }
+        }
+    }
+
+    let seed: u64 = 0xCAFE_BABE_1234_5678;
+    let mut rng = Rng(seed);
+    let codecs = TrackCodecs::new();
+
+    // Valid base64 tracks of different shapes and versions
+    let track1 = track("http", SourceData::probe("ogg", Some(String::from("opus"))));
+    let encoded1 = codec::encode(&track1.snapshot(Millis::new(54_321)), &codecs).expect("encode");
+    let track2 = track("http", SourceData::probe("ogg", None));
+    let encoded2 = codec::encode(&track2.snapshot(Millis::default()), &codecs).expect("encode");
+
+    let valid_seeds = [encoded1.into_bytes(), encoded2.into_bytes(), b"QAAAAA==".to_vec()];
+
+    for iteration in 0..100_000 {
+        let base = &valid_seeds[rng.next_usize(valid_seeds.len())];
+        let mut mutated = base.clone();
+
+        match rng.next() % 4 {
+            0 => {
+                // Flip random bytes
+                let count = 1 + rng.next_usize(4);
+                for _ in 0..count {
+                    if !mutated.is_empty() {
+                        let idx = rng.next_usize(mutated.len());
+                        mutated[idx] ^= (rng.next() & 0xFF) as u8;
+                    }
+                }
+            }
+            1 => {
+                // Truncate
+                let new_len = rng.next_usize(mutated.len() + 1);
+                mutated.truncate(new_len);
+            }
+            2 => {
+                // Extend
+                let extra = 1 + rng.next_usize(64);
+                for _ in 0..extra {
+                    mutated.push((rng.next() & 0xFF) as u8);
+                }
+            }
+            3 => {
+                // Splice
+                if !mutated.is_empty() {
+                    let start = rng.next_usize(mutated.len());
+                    let count = rng.next_usize(mutated.len() - start);
+                    for byte in mutated.iter_mut().skip(start).take(count) {
+                        *byte = (rng.next() & 0xFF) as u8;
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        let input_str = String::from_utf8_lossy(&mutated);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = codec::decode(&input_str, &codecs);
+        }));
+        if result.is_err() {
+            panic!(
+                "codec::decode panicked at iteration {iteration} with seed {seed:#x}, input: {input_str}"
+            );
+        }
+    }
+}

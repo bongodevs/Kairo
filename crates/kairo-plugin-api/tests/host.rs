@@ -324,3 +324,81 @@ async fn repeated_load_call_retire_retains_only_the_library() {
     // the measurement that matters.
     assert!(growth < 32 * 1024, "unexpected {growth} KiB growth over {CYCLES} cycles");
 }
+
+#[test]
+fn mutation_test_plugin_boundary_parse_points_never_panic_or_hang() {
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0
+        }
+        fn next_usize(&mut self, max: usize) -> usize {
+            if max == 0 { 0 } else { (self.next() as usize) % max }
+        }
+    }
+
+    let seed: u64 = 0xFEED_FACE_9876_5432;
+    let mut rng = Rng(seed);
+
+    let manifest_seed = br#"{"name":"test","version":"1.0.0","sources":["test"]}"#.to_vec();
+    let load_result_seed = br#"{"type":"empty"}"#.to_vec();
+    let open_seed = br#"{"type":"url","url":"https://example.com/audio.mp3"}"#.to_vec();
+    let seeds = [manifest_seed, load_result_seed, open_seed];
+
+    for iteration in 0..100_000 {
+        let base = &seeds[rng.next_usize(seeds.len())];
+        let mut mutated = base.clone();
+
+        match rng.next() % 4 {
+            0 => {
+                let count = 1 + rng.next_usize(4);
+                for _ in 0..count {
+                    if !mutated.is_empty() {
+                        let idx = rng.next_usize(mutated.len());
+                        mutated[idx] ^= (rng.next() & 0xFF) as u8;
+                    }
+                }
+            }
+            1 => {
+                let new_len = rng.next_usize(mutated.len() + 1);
+                mutated.truncate(new_len);
+            }
+            2 => {
+                let extra = 1 + rng.next_usize(64);
+                for _ in 0..extra {
+                    mutated.push((rng.next() & 0xFF) as u8);
+                }
+            }
+            3 => {
+                if !mutated.is_empty() {
+                    let start = rng.next_usize(mutated.len());
+                    let count = rng.next_usize(mutated.len() - start);
+                    for byte in mutated.iter_mut().skip(start).take(count) {
+                        *byte = (rng.next() & 0xFF) as u8;
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        let input_str = String::from_utf8_lossy(&mutated);
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match iteration % 3 {
+                0 => {
+                    let _ = decode_json::<Manifest>("manifest", &input_str);
+                }
+                1 => {
+                    let _ = decode_json::<LoadResult>("load", &input_str);
+                }
+                _ => {
+                    let _ = decode_json::<Open>("open", &input_str);
+                }
+            }));
+        if result.is_err() {
+            panic!(
+                "decode_json panicked at iteration {iteration} with seed {seed:#x}, input: {input_str}"
+            );
+        }
+    }
+}
