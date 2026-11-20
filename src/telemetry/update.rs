@@ -11,8 +11,8 @@ struct Release {
     tag_name: String,
 }
 
-pub async fn check(logging: &LoggingConfig) {
-    if std::env::var_os("KAIRO_NO_UPDATE_CHECK").is_some() {
+pub async fn check(logging: &LoggingConfig, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    if std::env::var_os("KAIRO_NO_UPDATE_CHECK").is_some() || *shutdown.borrow() {
         return;
     }
 
@@ -20,18 +20,23 @@ pub async fn check(logging: &LoggingConfig) {
         return;
     };
 
-    let release = match latest().await {
-        Ok(Some(release)) => release,
-        Ok(None) => return,
-        Err(err) => {
-            tracing::debug!("update check failed: {err}");
-            return;
-        }
-    };
+    tokio::select! {
+        _ = shutdown.wait_for(|&seen| seen) => {}
+        release = latest() => {
+            let release = match release {
+                Ok(Some(release)) => release,
+                Ok(None) => return,
+                Err(err) => {
+                    tracing::debug!("update check failed: {err}");
+                    return;
+                }
+            };
 
-    match upgrade_to(&current, &release.tag_name) {
-        Some(latest) => announce(logging, &current, &latest),
-        None => tracing::debug!(version = %current, "Kairo is up to date"),
+            match upgrade_to(&current, &release.tag_name) {
+                Some(latest) => announce(logging, &current, &latest),
+                None => tracing::debug!(version = %current, "Kairo is up to date"),
+            }
+        }
     }
 }
 
@@ -93,5 +98,28 @@ mod tests {
         let current = Version::parse("4.6.0").unwrap();
         assert_eq!(upgrade_to(&current, "nightly"), None);
         assert_eq!(upgrade_to(&current, ""), None);
+    }
+
+    #[tokio::test]
+    async fn update_check_cancels_on_shutdown() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let logging = LoggingConfig::default();
+        let handle = tokio::spawn(async move {
+            check(&logging, rx).await;
+        });
+        tx.send(true).expect("send shutdown");
+        tokio::time::timeout(std::time::Duration::from_millis(500), handle)
+            .await
+            .expect("update check should terminate quickly after shutdown signal")
+            .expect("task join");
+    }
+
+    #[tokio::test]
+    async fn update_check_aborts_immediately_if_already_shutdown() {
+        let (_tx, rx) = tokio::sync::watch::channel(true);
+        let logging = LoggingConfig::default();
+        tokio::time::timeout(std::time::Duration::from_millis(100), check(&logging, rx))
+            .await
+            .expect("should exit immediately when shutdown is already true");
     }
 }

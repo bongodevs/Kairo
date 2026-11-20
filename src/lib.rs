@@ -13,7 +13,7 @@ mod tracks;
 mod utils;
 mod ws;
 
-pub use app::serve;
+pub use app::{serve, serve_with_shutdown};
 
 #[cfg(test)]
 #[path = "tests/jiosaavn_live.rs"]

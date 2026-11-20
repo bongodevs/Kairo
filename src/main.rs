@@ -22,11 +22,13 @@ async fn main() -> anyhow::Result<()> {
     {
         tracing::warn!(%rust_log, "RUST_LOG overrides the logging level");
     }
+    let (shutdown, stop_seen) = tokio::sync::watch::channel(false);
     let update_logging = config.logging.clone();
+    let update_shutdown = stop_seen.clone();
     tokio::spawn(async move {
-        kairo::telemetry::update::check(&update_logging).await;
+        kairo::telemetry::update::check(&update_logging, update_shutdown).await;
     });
-    kairo::serve(&config).await.context("run server")
+    kairo::serve_with_shutdown(&config, shutdown, stop_seen).await.context("run server")
 }
 
 fn config_path() -> std::path::PathBuf {

@@ -116,6 +116,14 @@ impl AppState {
 
 pub async fn serve(config: &Config) -> anyhow::Result<()> {
     let (shutdown, stop_seen) = tokio::sync::watch::channel(false);
+    serve_with_shutdown(config, shutdown, stop_seen).await
+}
+
+pub async fn serve_with_shutdown(
+    config: &Config,
+    shutdown: tokio::sync::watch::Sender<bool>,
+    stop_seen: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
     let notice = shutdown.clone();
     tokio::spawn(async move {
         await_stop_signal().await;
