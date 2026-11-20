@@ -4,6 +4,10 @@ mod clock;
 mod limit;
 mod opus_encode;
 
+#[cfg(test)]
+#[path = "../tests/fidelity.rs"]
+mod fidelity;
+
 pub mod decode;
 pub mod filters;
 pub mod mix;

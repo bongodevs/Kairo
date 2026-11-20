@@ -201,6 +201,11 @@ impl OpusFrameEncoder {
         self.process_post_timescale(&mut pcm[..sample_count]);
         pcm[sample_count..].fill(0.0);
         let volume = self.volume.apply_frame(pcm);
+        #[cfg(test)]
+        if self.limiter_enabled {
+            self.limiter.process(&mut pcm[..sample_count]);
+        }
+        #[cfg(not(test))]
         self.limiter.process(&mut pcm[..sample_count]);
         let length = self
             .encoder
@@ -260,6 +265,11 @@ where
 }
 
 impl OpusFrameEncoder {
+    #[cfg(test)]
+    pub(crate) fn set_limiter_enabled(&mut self, enabled: bool) {
+        self.limiter_enabled = enabled;
+    }
+
     pub fn set_volume(&mut self, volume: Volume) {
         self.volume.set(volume);
     }
@@ -362,6 +372,8 @@ pub struct OpusFrameEncoder {
     stats: OpusStats,
     volume: VolumeRamp,
     limiter: Limiter,
+    #[cfg(test)]
+    limiter_enabled: bool,
     filter_volume: Option<FilterVolume>,
     equalizer: Equalizer,
     karaoke: Option<Karaoke>,
@@ -399,6 +411,8 @@ impl OpusFrameEncoder {
             stats: OpusStats::default(),
             volume: VolumeRamp::new(Volume::default()),
             limiter: Limiter::new(),
+            #[cfg(test)]
+            limiter_enabled: true,
             filter_volume: None,
             equalizer: Equalizer::new(EqualizerConfig::default()),
             karaoke: None,
