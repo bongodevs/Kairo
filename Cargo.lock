@@ -1625,6 +1625,7 @@ dependencies = [
  "des",
  "futures-util",
  "getrandom 0.3.4",
+ "kairo-audio",
  "kairo-core",
  "kairo-plugin-api",
  "player",
