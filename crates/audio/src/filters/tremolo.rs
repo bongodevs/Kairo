@@ -19,10 +19,16 @@ impl Tremolo {
         let depth = config.depth * 0.5;
         Ok(Self {
             phase: 0.0,
-            step: std::f32::consts::TAU * config.frequency / SAMPLE_RATE as f32,
+            step: (std::f32::consts::TAU * config.frequency / SAMPLE_RATE as f32)
+                .rem_euclid(std::f32::consts::TAU),
             offset: 1.0 - depth,
             depth,
         })
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> f32 {
+        self.phase
     }
 
     pub fn process(&mut self, samples: &mut [f32]) {
@@ -31,6 +37,9 @@ impl Tremolo {
             frame[0] *= gain;
             frame[1] *= gain;
             self.phase += self.step;
+            if self.phase >= std::f32::consts::TAU {
+                self.phase = self.phase.rem_euclid(std::f32::consts::TAU);
+            }
         }
     }
 }
