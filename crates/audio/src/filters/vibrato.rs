@@ -44,11 +44,13 @@ impl Vibrato {
             if self.write == RING_FRAMES {
                 self.write = 0;
             }
-            self.phase += self.step;
-            if self.phase > std::f32::consts::TAU {
-                self.phase -= std::f32::consts::TAU;
-            }
+            self.phase = (self.phase + self.step).rem_euclid(std::f32::consts::TAU);
         }
+    }
+
+    #[must_use]
+    pub fn phase(&self) -> f32 {
+        self.phase
     }
 }
 

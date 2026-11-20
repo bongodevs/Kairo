@@ -40,3 +40,21 @@ fn vibrato_delay_wrap_stays_in_bounds_over_multiple_lfo_cycles() {
     }
     assert!(samples.iter().all(|sample| sample.is_finite()));
 }
+
+#[test]
+fn vibrato_phase_stays_wrapped_and_finite_over_simulated_30_minutes() {
+    let mut vibrato = Vibrato::new(VibratoConfig { frequency: 10.0, depth: 0.8 }).expect("vibrato");
+    let mut block = [0.5_f32; 960 * 2];
+    let total_frames = 48_000 * 60 * 30; // 30 minutes at 48kHz
+    let mut frames_processed = 0;
+    while frames_processed < total_frames {
+        vibrato.process(&mut block);
+        frames_processed += 960;
+    }
+    let phase = vibrato.phase();
+    assert!(
+        (0.0..std::f32::consts::TAU).contains(&phase),
+        "Vibrato phase must stay in [0, TAU), got {phase}"
+    );
+    assert!(block.iter().all(|s| s.is_finite()));
+}
