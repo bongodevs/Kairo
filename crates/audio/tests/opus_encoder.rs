@@ -305,7 +305,7 @@ fn unity_processing_keeps_every_finite_sample_bit_at_the_encoder() {
 #[test]
 fn music_profile_applies_every_exposed_encoder_control() {
     let encoder = OpusFrameEncoder::new(OpusEncoderConfig::default()).expect("encoder");
-    assert_eq!(encoder.encoder.bitrate_bps, 99_000);
+    assert_eq!(encoder.encoder.bitrate_bps, 128_000);
     assert_eq!(encoder.encoder.complexity, 10);
     assert!(!encoder.encoder.use_cbr, "music encoding must use VBR");
     assert!(!encoder.encoder.use_inband_fec);

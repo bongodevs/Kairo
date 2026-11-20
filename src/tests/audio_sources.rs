@@ -62,10 +62,12 @@ async fn the_configured_socket_timeout_reaches_the_http_source() {
 fn opus_and_resampling_settings_reach_the_engine_config() {
     let mut config = Config::default();
     config.lavalink.server.opus_encoding_quality = Some(3);
+    config.lavalink.server.opus_encoding_bitrate = Some(192_000);
     config.lavalink.server.resampling_quality = Some(ResamplingQualityConfig::High);
 
     let player = player_config(&config).expect("player config");
     assert_eq!(player.opus.complexity, 3);
+    assert_eq!(player.opus.bitrate_bps, 192_000);
     assert_eq!(player.resampling_quality, player::pcm::ResamplingQuality::High);
 
     config.lavalink.server.opus_encoding_quality = Some(10);

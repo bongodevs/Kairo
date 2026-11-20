@@ -13,6 +13,8 @@ fn empty_document_yields_defaults() {
     assert_eq!(config.lavalink.server.session_timeout, 60);
     assert_eq!(config.lavalink.server.buffer_duration_ms, None);
     assert_eq!(config.lavalink.server.opus_encoding_quality, None);
+    assert_eq!(config.lavalink.server.opus_encoding_bitrate, None);
+    assert_eq!(config.lavalink.server.opus_bitrate(), 128_000);
     assert_eq!(config.lavalink.server.resampling_quality, None);
     assert_eq!(config.lavalink.server.opus_quality(), 10);
     assert!(config.lavalink.server.sources.http);
@@ -367,6 +369,23 @@ resamplingQuality = "HIGH"
             toml::from_str(&format!("[lavalink.server]\nopusEncodingQuality = {value}\n"))
                 .expect("out-of-range config");
         assert_eq!(config.lavalink.server.opus_quality(), 10, "value {value}");
+    }
+}
+
+#[test]
+fn opus_bitrate_accepts_the_tested_range_and_falls_back_to_the_listening_default() {
+    for value in [8_000, 96_000, 128_000, 192_000, 256_000, 320_000] {
+        let config: Config =
+            toml::from_str(&format!("[lavalink.server]\nopusEncodingBitrate = {value}\n"))
+                .expect("bitrate config");
+        assert_eq!(config.lavalink.server.opus_bitrate(), value);
+    }
+
+    for value in [0, 7_999, 320_001, i64::MAX] {
+        let config: Config =
+            toml::from_str(&format!("[lavalink.server]\nopusEncodingBitrate = {value}\n"))
+                .expect("out-of-range bitrate config");
+        assert_eq!(config.lavalink.server.opus_bitrate(), 128_000);
     }
 }
 

@@ -216,10 +216,13 @@ pub struct OpusEncoderConfig {
     pub packet_loss_percent: i32,
 }
 
+// Listening found a clear gain over 96 kbps and no meaningful gain at the next step.
+const MUSIC_BITRATE_BPS: i32 = 128_000;
+
 impl Default for OpusEncoderConfig {
     fn default() -> Self {
         Self {
-            bitrate_bps: 99_000,
+            bitrate_bps: MUSIC_BITRATE_BPS,
             complexity: 10,
             use_cbr: false,
             use_inband_fec: false,

@@ -397,6 +397,7 @@ fn player_config(config: &Config) -> anyhow::Result<PlayerConfig> {
             }
         }),
         opus: player::opus::OpusEncoderConfig {
+            bitrate_bps: server.opus_bitrate(),
             complexity: server.opus_quality(),
             ..player::opus::OpusEncoderConfig::default()
         },

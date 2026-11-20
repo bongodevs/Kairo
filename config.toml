@@ -17,6 +17,8 @@ frameBufferDurationMs = 5000
 trackStuckThresholdMs = 10000
 # Opus encoder quality, 0 to 10 (10 is best and most expensive).
 opusEncodingQuality = 10
+# Opus target bitrate in bit/s, 8000 to 320000; listening selected 128000.
+opusEncodingBitrate = 128000
 # Resampling quality: LOW, MEDIUM or HIGH.
 resamplingQuality = "LOW"
 useSeekGhosting = true

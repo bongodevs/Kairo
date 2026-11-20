@@ -254,6 +254,9 @@ pub struct EngineConfig {
     /// Opus encoder quality from 0 to 10; out-of-range values warn and fall back to 10.
     #[serde(default)]
     pub opus_encoding_quality: Option<i64>,
+    /// Opus target bitrate in bit/s, from 8,000 through the tested 320,000 packet limit.
+    #[serde(default)]
+    pub opus_encoding_bitrate: Option<i64>,
     /// Resampling quality named like the reference's `LOW`, `MEDIUM` and `HIGH`.
     #[serde(default)]
     pub resampling_quality: Option<ResamplingQualityConfig>,
@@ -461,6 +464,7 @@ impl Default for EngineConfig {
             frame_buffer_duration_ms: default_frame_buffer_duration(),
             track_stuck_threshold_ms: default_track_stuck_threshold(),
             opus_encoding_quality: None,
+            opus_encoding_bitrate: None,
             resampling_quality: None,
             use_seek_ghosting: true,
             session_timeout: default_session_timeout(),
@@ -489,6 +493,27 @@ impl EngineConfig {
                 10
             }
             None => 10,
+        }
+    }
+
+    #[must_use]
+    pub fn opus_bitrate(&self) -> i32 {
+        const MIN: i64 = 8_000;
+        const MAX: i64 = 320_000;
+        let default = player::opus::OpusEncoderConfig::default().bitrate_bps;
+        match self.opus_encoding_bitrate {
+            Some(bitrate) if (MIN..=MAX).contains(&bitrate) => {
+                i32::try_from(bitrate).unwrap_or(default)
+            }
+            Some(bitrate) => {
+                tracing::warn!(
+                    value = bitrate,
+                    default,
+                    "opusEncodingBitrate is not within 8000 to 320000; using the default"
+                );
+                default
+            }
+            None => default,
         }
     }
 }
